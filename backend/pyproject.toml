@@ -1,0 +1,39 @@
+[project]
+name = "meeting-intelligence-backend"
+version = "0.1.0"
+description = "Backend for the Meeting Intelligence web application"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "sqlalchemy",
+    "aiosqlite",
+    "python-multipart",
+    "numpy",
+    "soundfile",
+    # Pinned on purpose: sherpa-onnx >= 1.12 macOS arm64 wheels ship without
+    # libonnxruntime.dylib and fail to import. 1.10.46 is the newest release
+    # with self-contained macOS and manylinux wheels. See README "Known issues".
+    "sherpa-onnx==1.10.46",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
