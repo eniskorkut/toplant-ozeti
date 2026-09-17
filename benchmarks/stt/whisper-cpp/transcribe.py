@@ -13,10 +13,16 @@ VERSION_FILE = Path("/opt/whisper.cpp/VERSION")
 
 DURATION_RE = re.compile(r"\((\d+) samples, ([\d.]+) sec\)")
 TOTAL_TIME_RE = re.compile(r"total time\s*=\s*([\d.]+)\s*ms")
+LOAD_TIME_RE = re.compile(r"load time\s*=\s*([\d.]+)\s*ms")
 
 
 def parse_engine_seconds(stderr: str) -> float | None:
     match = TOTAL_TIME_RE.search(stderr)
+    return round(float(match.group(1)) / 1000, 3) if match else None
+
+
+def parse_load_seconds(stderr: str) -> float | None:
+    match = LOAD_TIME_RE.search(stderr)
     return round(float(match.group(1)) / 1000, 3) if match else None
 
 
@@ -82,6 +88,7 @@ def main() -> int:
                 "language": args.language,
                 "audio_duration_seconds": parse_audio_duration(completed.stderr),
                 "engine_reported_seconds": engine_seconds,
+                "model_load_seconds": parse_load_seconds(completed.stderr),
                 "inference_seconds": engine_seconds,
                 "transcript": transcript,
             },

@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-09-17T19:54:37+00:00",
+  "faster_whisper": {
+    "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "resolved_by": "faster_whisper.utils._MODELS",
+    "model_bin_size_bytes": 1617884929,
+    "model_bin_sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+    "expected_size_bytes": 1617884929,
+    "expected_sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+    "verified": true,
+    "cache_size_bytes": 3243338884
+  },
+  "whisper_cpp": {
+    "model": "ggml-large-v3-turbo-q8_0.bin",
+    "source": "official ggerganov/whisper.cpp distribution",
+    "size_bytes": 874188075,
+    "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    "expected_size_bytes": 874188075,
+    "expected_sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    "verified": true,
+    "locally_quantized": false
+  },
+  "container_memory": {
+    "mem_total_kb": 8124256,
+    "swap_total_kb": 1048572,
+    "swap_free_kb": 1048572
+  }
+}

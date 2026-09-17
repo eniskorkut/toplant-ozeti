@@ -230,7 +230,6 @@ def download_models() -> None:
 
 
 def prepare_q8_0_model() -> dict:
-    """Quantize the officially distributed f16 small model with whisper.cpp's quantize."""
     models = CACHE_DIR / "whisper-cpp"
     source = models / "ggml-small.bin"
     target = models / "ggml-small-q8_0.bin"
@@ -261,6 +260,9 @@ def prepare_q8_0_model() -> dict:
         "quantization": "q8_0",
         "tool": "whisper.cpp quantize (v1.9.4)",
     }
+    (CACHE_DIR / "model-metadata-small.json").write_text(
+        json.dumps(metadata, indent=2), encoding="utf-8"
+    )
     (RESULTS_DIR / "model-metadata.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
     )
@@ -271,12 +273,233 @@ def prepare_q8_0_model() -> dict:
     return metadata
 
 
-CONFIGS: list[dict] = [
+def faster_whisper_repo_id(model: str) -> str:
+    """The official CT2 repo id that faster-whisper itself maps a model name to."""
+    output = docker(
+        [
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            FASTER_WHISPER_IMAGE,
+            "-c",
+            f"from faster_whisper.utils import _MODELS;print(_MODELS['{model}'])",
+        ]
+    ).stdout.strip()
+    return output
+
+
+def curl_json(url: str) -> object:
+    completed = subprocess.run(
+        ["curl", "-fsSL", url],
+        capture_output=True,
+        text=True,
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    return json.loads(completed.stdout)
+
+
+def hf_file_info(repo: str, filename: str) -> dict:
+    """Expected size and sha256 (LFS oid) for a file in an official HF repo."""
+    entries = curl_json(f"https://huggingface.co/api/models/{repo}/tree/main?recursive=1")
+    for entry in entries:
+        if entry.get("path") == filename:
+            lfs = entry.get("lfs") or {}
+            return {
+                "size": entry.get("size") or lfs.get("size"),
+                "sha256": lfs.get("oid"),
+            }
+    raise SystemExit(f"{filename} not found in official repo {repo}")
+
+
+def directory_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def vm_memory_kb(image: str) -> dict[str, int]:
+    output = docker(["run", "--rm", "--entrypoint", "cat", image, "/proc/meminfo"]).stdout
+    values: dict[str, int] = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.strip().split()
+        if parts and parts[0].isdigit():
+            values[key.strip()] = int(parts[0])
+    return values
+
+
+def download_turbo_models() -> dict:
+    """Download both official turbo models, verify them, and record resource metadata."""
+    (CACHE_DIR / "huggingface").mkdir(parents=True, exist_ok=True)
+    (CACHE_DIR / "whisper-cpp").mkdir(parents=True, exist_ok=True)
+
+    log("downloading faster-whisper model: large-v3-turbo (download only, no model load)")
+    fw_repo = faster_whisper_repo_id("large-v3-turbo")
+    run_in_container(
+        FASTER_WHISPER_IMAGE,
+        [
+            "python",
+            "-c",
+            (
+                "from huggingface_hub import snapshot_download;"
+                f"snapshot_download(repo_id='{fw_repo}');print('cached')"
+            ),
+        ],
+        volumes=[f"{CACHE_DIR / 'huggingface'}:/cache/huggingface"],
+        environment={"HF_HOME": "/cache/huggingface"},
+    )
+
+    log("downloading official whisper.cpp model: large-v3-turbo-q8_0")
+    run_in_container(
+        WHISPER_CPP_IMAGE,
+        [
+            "/opt/whisper.cpp/models/download-ggml-model.sh",
+            "large-v3-turbo-q8_0",
+            WHISPER_CPP_MODEL_DIR,
+        ],
+        volumes=[f"{CACHE_DIR / 'whisper-cpp'}:{WHISPER_CPP_MODEL_DIR}"],
+        environment={},
+    )
+
+    # Official source of truth for the whisper.cpp model, verified before benchmarking.
+    cpp_model = CACHE_DIR / "whisper-cpp" / "ggml-large-v3-turbo-q8_0.bin"
+    if not cpp_model.exists():
+        raise SystemExit(f"whisper.cpp turbo model missing after download: {cpp_model}")
+    cpp_expected = hf_file_info("ggerganov/whisper.cpp", "ggml-large-v3-turbo-q8_0.bin")
+    cpp_actual_sha = sha256_of(cpp_model)
+    cpp_actual_size = cpp_model.stat().st_size
+    cpp_verified = (
+        cpp_expected["sha256"] == cpp_actual_sha and cpp_expected["size"] == cpp_actual_size
+    )
+    if not cpp_verified:
+        raise SystemExit(
+            "official model verification failed for ggml-large-v3-turbo-q8_0.bin: "
+            f"expected size={cpp_expected['size']} sha256={cpp_expected['sha256']}, "
+            f"actual size={cpp_actual_size} sha256={cpp_actual_sha}"
+        )
+
+    fw_repo_dir = CACHE_DIR / "huggingface" / "hub" / f"models--{fw_repo.replace('/', '--')}"
+    fw_models = sorted(fw_repo_dir.glob("snapshots/*/model.bin"))
+    fw_metadata: dict = {"repo": fw_repo, "resolved_by": "faster_whisper.utils._MODELS"}
+    if fw_models:
+        fw_model = fw_models[0]
+        fw_expected = hf_file_info(fw_repo, "model.bin")
+        fw_actual_sha = sha256_of(fw_model)
+        fw_metadata.update(
+            {
+                "model_bin_size_bytes": fw_model.stat().st_size,
+                "model_bin_sha256": fw_actual_sha,
+                "expected_size_bytes": fw_expected["size"],
+                "expected_sha256": fw_expected["sha256"],
+                "verified": fw_expected["sha256"] == fw_actual_sha
+                and fw_expected["size"] == fw_model.stat().st_size,
+            }
+        )
+    fw_metadata["cache_size_bytes"] = directory_size_bytes(fw_repo_dir)
+
+    memory = vm_memory_kb(FASTER_WHISPER_IMAGE)
+    metadata = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "faster_whisper": fw_metadata,
+        "whisper_cpp": {
+            "model": "ggml-large-v3-turbo-q8_0.bin",
+            "source": "official ggerganov/whisper.cpp distribution",
+            "size_bytes": cpp_actual_size,
+            "sha256": cpp_actual_sha,
+            "expected_size_bytes": cpp_expected["size"],
+            "expected_sha256": cpp_expected["sha256"],
+            "verified": cpp_verified,
+            "locally_quantized": False,
+        },
+        "container_memory": {
+            "mem_total_kb": memory.get("MemTotal"),
+            "swap_total_kb": memory.get("SwapTotal"),
+            "swap_free_kb": memory.get("SwapFree"),
+        },
+    }
+    (RESULTS_DIR / TIERS["turbo"]["metadata"]).write_text(
+        json.dumps(metadata, indent=2), encoding="utf-8"
+    )
+    log(
+        "turbo models verified: whisper.cpp q8_0 sha256 "
+        f"{cpp_actual_sha[:16]}… ({cpp_actual_size} bytes), faster-whisper cache "
+        f"{fw_metadata['cache_size_bytes']} bytes"
+    )
+    return metadata
+
+
+SMALL_CONFIGS: list[dict] = [
     {"id": "fw-small-int8-b1", "label": "FW small INT8 batch1", "engine": "faster-whisper", "batch_size": 1},
     {"id": "fw-small-int8-b8", "label": "FW small INT8 batch8", "engine": "faster-whisper", "batch_size": 8},
     {"id": "wc-small-q5_1", "label": "whisper.cpp small Q5_1", "engine": "whisper.cpp", "model": "small-q5_1"},
     {"id": "wc-small-q8_0", "label": "whisper.cpp small Q8_0", "engine": "whisper.cpp", "model": "small-q8_0"},
 ]
+
+# Turbo tier: sequential decoding only for the faster-whisper candidate (the
+# previous round showed batching changes context handling and worsens WER).
+TURBO_CONFIGS: list[dict] = [
+    {
+        "id": "fw-large-v3-turbo-int8",
+        "label": "FW large-v3-turbo INT8",
+        "engine": "faster-whisper",
+        "model": "large-v3-turbo",
+        "batch_size": 1,
+    },
+    {
+        "id": "wc-large-v3-turbo-q8_0",
+        "label": "whisper.cpp large-v3-turbo Q8_0",
+        "engine": "whisper.cpp",
+        "model": "large-v3-turbo-q8_0",
+    },
+]
+
+TIERS: dict[str, dict] = {
+    "small": {
+        "configs": SMALL_CONFIGS,
+        "json": "matrix.json",
+        "markdown": "matrix.md",
+        "runs": "runs",
+        "metadata": "model-metadata.json",
+    },
+    "turbo": {
+        "configs": TURBO_CONFIGS,
+        "json": "turbo-matrix.json",
+        "markdown": "turbo-matrix.md",
+        "runs": "turbo-runs",
+        "metadata": "model-metadata-turbo.json",
+    },
+}
+
+# Historical small-tier baselines (used only when results/matrix.json is absent).
+SMALL_BASELINES: list[dict] = [
+    {"label": "FW small INT8 batch1", "wer": 0.2560, "rtf": 0.4413, "rss_mb": 760.2},
+    {"label": "whisper.cpp small Q8_0", "wer": 0.3095, "rtf": 0.1215, "rss_mb": 601.4},
+]
+
+WER_BANDS = [
+    (0.10, "excellent candidate"),
+    (0.15, "strong candidate"),
+    (0.20, "possibly usable, review errors"),
+    (float("inf"), "not acceptable as final production quality"),
+]
+
+RTF_BANDS = [
+    (0.15, "excellent CPU speed"),
+    (0.30, "good for post-meeting processing"),
+    (0.50, "acceptable but slower"),
+    (float("inf"), "too slow for our preferred UX"),
+]
+
+
+def classify(value: float, bands: list[tuple[float, str]]) -> str:
+    for threshold, label in bands:
+        if value <= threshold:
+            return label
+    return bands[-1][1]
 
 
 def build_command(config: dict, audio_container_path: str, threads: int, beam_size: int) -> list[str]:
@@ -289,7 +512,7 @@ def build_command(config: dict, audio_container_path: str, threads: int, beam_si
             "--audio",
             audio_container_path,
             "--model",
-            "small",
+            config.get("model", "small"),
             "--threads",
             str(threads),
             "--beam-size",
@@ -297,7 +520,7 @@ def build_command(config: dict, audio_container_path: str, threads: int, beam_si
             "--language",
             "tr",
             "--batch-size",
-            str(config["batch_size"]),
+            str(config.get("batch_size", 1)),
         ]
     return [
         "/usr/bin/time",
@@ -359,6 +582,9 @@ def summarize(runs: list[dict], audio_seconds: float, reference: str) -> dict:
         raise RuntimeError("missing inference time in at least one run")
     wall_values = [run["wall_seconds"] for run in runs if run["wall_seconds"]]
     rss_values = [run["peak_rss_kb"] for run in runs if run["peak_rss_kb"]]
+    load_values = [
+        run["model_load_seconds"] for run in runs if run.get("model_load_seconds") is not None
+    ]
 
     median_seconds = statistics.median(inference)
     median_run = min(runs, key=lambda run: abs(run["inference_seconds"] - median_seconds))
@@ -374,6 +600,9 @@ def summarize(runs: list[dict], audio_seconds: float, reference: str) -> dict:
         "wall_seconds_median": round(statistics.median(wall_values), 3) if wall_values else None,
         "rtf_median": round(median_seconds / audio_seconds, 4),
         "peak_rss_mb": round(max(rss_values) / 1024, 1) if rss_values else None,
+        "model_load_seconds_median": round(statistics.median(load_values), 3)
+        if load_values
+        else None,
         "transcripts_identical_across_runs": len(normalized) == 1,
         "quality": {
             "wer": round(quality["wer"], 4),
@@ -392,7 +621,7 @@ def extrapolate(rtf: float, minutes: int) -> float:
     return minutes * 60 * rtf / 60
 
 
-def markdown_matrix(results: dict) -> str:
+def markdown_small(results: dict) -> str:
     samples = results["samples"]
     sample_keys = list(samples.keys())
     rows = []
@@ -506,6 +735,186 @@ def markdown_matrix(results: dict) -> str:
     return "\n".join(lines)
 
 
+def load_small_baselines() -> list[dict]:
+    """Small-tier baselines from the previous round (results/matrix.json)."""
+    matrix_path = RESULTS_DIR / TIERS["small"]["json"]
+    if matrix_path.exists():
+        previous = json.loads(matrix_path.read_text(encoding="utf-8"))
+        rows = []
+        for config in previous.get("configs", []):
+            if config["id"] not in {"fw-small-int8-b1", "wc-small-q8_0"}:
+                continue
+            rows.append(
+                {
+                    "label": config["label"],
+                    "wer": config["combined"]["wer"],
+                    "rtf": config["combined"]["rtf_median"],
+                    "rss_mb": config["peak_rss_mb"],
+                }
+            )
+        if rows:
+            return rows
+    return SMALL_BASELINES
+
+
+def markdown_turbo(results: dict, metadata: dict | None) -> str:
+    samples = results["samples"]
+    sample_keys = list(samples.keys())
+
+    lines = [
+        "# CPU STT benchmark — large-v3-turbo tier",
+        "",
+        f"Generated: {results['generated_at']}",
+        "",
+        "| Configuration | Near WER | Far WER | Combined WER | Near RTF | Far RTF | Median RTF | Peak RSS |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for config in results["configs"]:
+        near = config["samples"]["sample_near"]["summary"]
+        far = config["samples"]["sample_far"]["summary"]
+        lines.append(
+            "| {label} | {nw:.4f} | {fw:.4f} | {cw:.4f} | {nr:.4f} | {fr:.4f} | {mr:.4f} | {rss} MB |".format(
+                label=config["label"],
+                nw=near["quality"]["wer"],
+                fw=far["quality"]["wer"],
+                cw=config["combined"]["wer"],
+                nr=near["rtf_median"],
+                fr=far["rtf_median"],
+                mr=config["combined"]["rtf_median"],
+                rss=config["peak_rss_mb"],
+            )
+        )
+
+    lines += [
+        "",
+        "## With previous small-tier baselines",
+        "",
+        "| Configuration | Combined WER | Median RTF | Peak RSS |",
+        "|---|---:|---:|---:|",
+    ]
+    for baseline in load_small_baselines():
+        lines.append(
+            f"| {baseline['label']} | {baseline['wer']:.4f} | {baseline['rtf']:.4f} | "
+            f"{baseline['rss_mb']} MB |"
+        )
+    for config in results["configs"]:
+        lines.append(
+            f"| {config['label']} | {config['combined']['wer']:.4f} | "
+            f"{config['combined']['rtf_median']:.4f} | {config['peak_rss_mb']} MB |"
+        )
+
+    lines += [
+        "",
+        "## Project evaluation bands (thresholds, not adjusted after the fact)",
+        "",
+        "| Configuration | Combined WER | WER band | Median RTF | RTF band |",
+        "|---|---:|---|---:|---|",
+    ]
+    for config in results["configs"]:
+        wer = config["combined"]["wer"]
+        rtf = config["combined"]["rtf_median"]
+        lines.append(
+            f"| {config['label']} | {wer:.4f} | {classify(wer, WER_BANDS)} | {rtf:.4f} | "
+            f"{classify(rtf, RTF_BANDS)} |"
+        )
+
+    lines += [
+        "",
+        "## Model load time (excluded from inference time)",
+        "",
+        "| Configuration | Median model load |",
+        "|---|---:|",
+    ]
+    for config in results["configs"]:
+        loads = [
+            config["samples"][key]["summary"]["model_load_seconds_median"] for key in sample_keys
+        ]
+        loads = [value for value in loads if value is not None]
+        median_load = f"{statistics.median(loads):.3f} s" if loads else "not reported by engine"
+        lines.append(f"| {config['label']} | {median_load} |")
+
+    lines += [
+        "",
+        "## Audio conditions",
+        "",
+        "| Sample | Duration | Mean volume | Max volume | Clipping | Size |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for key in sample_keys:
+        sample = samples[key]
+        lines.append(
+            "| {key} | {duration:.2f} s | {mean} dB | {max} dB | {clip} | {size} B |".format(
+                key=key,
+                duration=sample["duration_seconds"],
+                mean=sample["mean_volume_db"],
+                max=sample["max_volume_db"],
+                clip="yes" if sample["clipping"] else "no",
+                size=sample["size_bytes"],
+            )
+        )
+
+    lines += [
+        "",
+        "## Extrapolated processing time (median RTF, labeled extrapolation)",
+        "",
+        "| Configuration | 30 min | 60 min | 120 min |",
+        "|---|---:|---:|---:|",
+    ]
+    for config in results["configs"]:
+        rtf = config["combined"]["rtf_median"]
+        lines.append(
+            f"| {config['label']} | {extrapolate(rtf, 30):.2f} min | "
+            f"{extrapolate(rtf, 60):.2f} min | {extrapolate(rtf, 120):.2f} min |"
+        )
+
+    lines += [
+        "",
+        "## Resource safety",
+        "",
+        "| Configuration | Peak RSS | Swap observed | Model disk size |",
+        "|---|---:|---|---:|",
+    ]
+    for config in results["configs"]:
+        disk = "n/a"
+        if metadata:
+            if config["engine"] == "faster-whisper":
+                disk = f"{metadata['faster_whisper']['cache_size_bytes']} B (cache)"
+            else:
+                disk = f"{metadata['whisper_cpp']['size_bytes']} B"
+        lines.append(
+            f"| {config['label']} | {config['peak_rss_mb']} MB | "
+            f"{'yes' if config['swap_observed'] else 'no'} | {disk} |"
+        )
+
+    lines += ["", "## Raw transcripts (median run per configuration/sample)", ""]
+    for config in results["configs"]:
+        for key in sample_keys:
+            lines += [
+                f"### {config['label']} — {key}",
+                "",
+                f"```text\n{config['samples'][key]['summary']['transcript']}\n```",
+                "",
+            ]
+
+    lines += ["## Metric labels (no decision taken)", ""]
+    for label in results["pareto"].values():
+        lines.append(f"- {label}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def markdown_report(results: dict, tier: str) -> str:
+    if tier == "turbo":
+        metadata_path = RESULTS_DIR / TIERS["turbo"]["metadata"]
+        metadata = (
+            json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata_path.exists()
+            else None
+        )
+        return markdown_turbo(results, metadata)
+    return markdown_small(results)
+
+
 def pareto_labels(configs: list[dict]) -> dict[str, str]:
     def label(config: dict) -> str:
         return config["label"]
@@ -539,9 +948,13 @@ def main() -> int:
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--tier", choices=["small", "turbo"], default="small")
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--skip-setup", action="store_true")
     args = parser.parse_args()
+
+    tier = TIERS[args.tier]
+    log(f"tier: {args.tier} ({len(tier['configs'])} configurations)")
 
     samples = resolve_samples(args.far_audio, args.near_audio)
     for key, path in samples.items():
@@ -549,8 +962,11 @@ def main() -> int:
 
     if not args.skip_setup:
         build_images()
-        download_models()
-        prepare_q8_0_model()
+        if args.tier == "turbo":
+            download_turbo_models()
+        else:
+            download_models()
+            prepare_q8_0_model()
     if args.setup:
         log("setup complete")
         return 0
@@ -572,14 +988,22 @@ def main() -> int:
     if args.threads > container_nproc:
         raise SystemExit(f"requested {args.threads} threads but the container exposes {container_nproc}")
 
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs_dir = RESULTS_DIR / tier["runs"]
+    runs_dir.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    memory_before = vm_memory_kb(FASTER_WHISPER_IMAGE)
+    log(
+        f"container memory: {memory_before.get('MemTotal')} kB total, "
+        f"swap free {memory_before.get('SwapFree')} kB"
+    )
+
     config_results: list[dict] = []
-    for config in CONFIGS:
+    for config in tier["configs"]:
         log(f"config {config['id']} ({config['label']})")
         per_sample: dict[str, dict] = {}
         peak_rss_values: list[float] = []
+        swap_free_min = memory_before.get("SwapFree")
 
         for key, path in samples.items():
             audio_container_path = container_audio_path(path)
@@ -595,13 +1019,16 @@ def main() -> int:
                     config, audio_container_path, args.threads, args.beam_size, index, "measured"
                 )
                 measured.append(payload)
-                (RUNS_DIR / f"{config['id']}-{key}-run{index}.json").write_text(
+                (runs_dir / f"{config['id']}-{key}-run{index}.json").write_text(
                     json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
             summary = summarize(measured, audio_seconds, reference)
             per_sample[key] = {"runs": measured, "summary": summary}
             peak_rss_values.append(summary["peak_rss_mb"] or 0.0)
+            swap_now = vm_memory_kb(FASTER_WHISPER_IMAGE).get("SwapFree")
+            if swap_now is not None:
+                swap_free_min = min(swap_free_min or swap_now, swap_now)
             log(
                 f"    -> median {summary['seconds']['median']:.3f} s | RTF {summary['rtf_median']:.4f} | "
                 f"WER {summary['quality']['wer']:.4f} | peak RSS {summary['peak_rss_mb']} MB"
@@ -624,6 +1051,12 @@ def main() -> int:
                     "mode": per_sample["sample_near"]["runs"][0].get("mode"),
                 },
                 "peak_rss_mb": max(peak_rss_values),
+                "swap_free_min_kb": swap_free_min,
+                "swap_observed": bool(
+                    swap_free_min is not None
+                    and memory_before.get("SwapFree") is not None
+                    and swap_free_min < memory_before["SwapFree"]
+                ),
                 "samples": per_sample,
                 "combined": {
                     "wer": round(total_errors / total_reference_words, 4)
@@ -642,6 +1075,7 @@ def main() -> int:
         )
 
     results = {
+        "tier": args.tier,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "samples": conditions,
         "environment": {
@@ -660,12 +1094,12 @@ def main() -> int:
     }
     results["pareto"] = pareto_labels(config_results)
 
-    (RESULTS_DIR / "matrix.json").write_text(
-        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (RESULTS_DIR / "matrix.md").write_text(markdown_matrix(results), encoding="utf-8")
-    log(f"wrote {RESULTS_DIR / 'matrix.json'}")
-    log(f"wrote {RESULTS_DIR / 'matrix.md'}")
+    json_path = RESULTS_DIR / tier["json"]
+    markdown_path = RESULTS_DIR / tier["markdown"]
+    json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.write_text(markdown_report(results, args.tier), encoding="utf-8")
+    log(f"wrote {json_path}")
+    log(f"wrote {markdown_path}")
     return 0
 
 

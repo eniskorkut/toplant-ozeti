@@ -47,3 +47,7 @@ benchmarks/stt/results/latest.md
 benchmarks/stt/results/runs/
 benchmarks/stt/results/matrix.json
 benchmarks/stt/results/matrix.md
+benchmarks/stt/results/turbo-matrix.json
+benchmarks/stt/results/turbo-matrix.md
+benchmarks/stt/results/turbo-runs/
+benchmarks/stt/results/model-metadata-small.json

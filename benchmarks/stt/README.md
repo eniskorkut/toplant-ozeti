@@ -38,6 +38,51 @@ that is not the pinned far recording. Override with `--far-audio` / `--near-audi
 - 1 warmup run (excluded) + 3 measured runs per configuration and sample.
 - Model caches live in `benchmarks/stt/.cache/` (git-ignored).
 
+## Tiers
+
+Two tiers share the same samples, reference text, fairness rules and scoring:
+
+- `--tier small` (default): A1/A2 faster-whisper `small` int8, B1 whisper.cpp `small-q5_1`,
+  B2 whisper.cpp `small-q8_0` (locally quantized from the official f16 model).
+- `--tier turbo`: T1 faster-whisper `large-v3-turbo` int8 (sequential only — the previous
+  round showed batching worsens WER), T2 whisper.cpp `large-v3-turbo-q8_0` (official model,
+  not locally quantized).
+
+```bash
+python3 benchmarks/stt/run_benchmark.py --setup                  # small tier
+python3 benchmarks/stt/run_benchmark.py --skip-setup
+python3 benchmarks/stt/run_benchmark.py --tier turbo --setup     # downloads + verifies official turbo models
+python3 benchmarks/stt/run_benchmark.py --tier turbo --skip-setup
+```
+
+Turbo results are written to `results/turbo-matrix.{json,md}` and `results/turbo-runs/`
+so the small-tier artifacts are never overwritten. Model verification data
+(expected vs. local SHA256 and size) is written to
+`results/model-metadata-turbo.json` (hash/size information only, no speech content).
+
+## Model verification (turbo tier)
+
+- **whisper.cpp:** official `ggerganov/whisper.cpp` distribution, `ggml-large-v3-turbo-q8_0.bin`.
+  Expected size and SHA256 are read from the official Hugging Face repository and compared with
+  the local file before benchmarking. The model is **not** locally quantized.
+- **faster-whisper:** the repo id is resolved from `faster_whisper.utils._MODELS`
+  (`large-v3-turbo` → `mobiuslabsgmbh/faster-whisper-large-v3-turbo`, which Hugging Face
+  currently redirects upstream). `model.bin` is verified against the official SHA256/size.
+
+## Evaluation bands (project thresholds, applied after the fact, never adjusted)
+
+WER: `<= 0.10` excellent · `<= 0.15` strong · `<= 0.20` possibly usable, review errors ·
+`> 0.20` not acceptable as final production quality.
+
+RTF: `<= 0.15` excellent CPU speed · `<= 0.30` good for post-meeting processing ·
+`<= 0.50` acceptable but slower · `> 0.50` too slow for the preferred UX.
+
+## Resource safety
+
+The Docker VM on the development machine has ~8.1 GB RAM and 1 GB swap. Peak RSS per
+configuration is captured with `time -v`, swap activity is checked before/after each
+configuration, and a candidate is stopped instead of pushing the VM into memory pressure.
+
 ## Documented behavior differences (not hidden)
 
 - **A2 batched mode:** with `vad_filter=False`, the official API requires explicit
