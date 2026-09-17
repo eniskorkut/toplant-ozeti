@@ -51,3 +51,10 @@ benchmarks/stt/results/turbo-matrix.json
 benchmarks/stt/results/turbo-matrix.md
 benchmarks/stt/results/turbo-runs/
 benchmarks/stt/results/model-metadata-small.json
+
+# Diarization benchmark (models and outputs may contain speech content)
+benchmarks/diarization/models/
+benchmarks/diarization/results/latest.json
+benchmarks/diarization/results/latest.md
+benchmarks/diarization/results/runs/
+benchmarks/diarization/reference_turns.txt

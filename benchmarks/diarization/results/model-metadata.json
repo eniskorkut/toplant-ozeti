@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-09-17T20:06:10+00:00",
+  "segmentation": {
+    "model": "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+    "archive": "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+    "archive_size_bytes": 6958444,
+    "archive_sha256": "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
+    "model_size_bytes": 5992913,
+    "model_sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+    "official_checksum_available": false
+  },
+  "embeddings": {
+    "3d-speaker": {
+      "model": "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+      "size_bytes": 39593761,
+      "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b",
+      "official_sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b",
+      "verified": true,
+      "int8_variant": "not published by the official project; FP32 used"
+    },
+    "titanet": {
+      "model": "nemo_en_titanet_small.onnx",
+      "size_bytes": 40257283,
+      "sha256": "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
+      "official_sha256": "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
+      "verified": true,
+      "int8_variant": "not published by the official project; FP32 used"
+    }
+  },
+  "note": "official k2-fsa/sherpa-onnx release assets; no third-party conversions"
+}
