@@ -73,7 +73,51 @@ If the file is absent, sequence metrics are reported as `n/a` and only structura
 metrics are produced. The file contains no speech text and is git-ignored because it
 describes a specific recording session.
 
-## Usage
+## VoxConverse 0.3 ground-truth benchmark (current round)
+
+Scores both embeddings against real multi-speaker audio with reference RTTM annotations.
+
+- Dataset: **VoxConverse 0.3** — dev set audio from the official Oxford download
+  (`voxconverse_dev_wav.zip`), annotations from `joonson/voxconverse` master. License
+  CC BY 4.0, research purposes. The archive is verified after download (exact size,
+  full `zipfile.testzip()` integrity pass, SHA256 recorded in `provenance.json`).
+- Subset: 12 recordings selected deterministically from RTTMs before any model ran
+  (4 with 2 speakers, 4 with 3, 4 with ≥4; shortest valid files first, ≥30 s each).
+  Ids live in `voxconverse_subset.txt`; calibration/validation split is the first two
+  vs. the last two files of each group.
+- Scoring: isolated `nryant/dscore` checkout pinned to commit
+  `e02f949ac6592279300a2c33d03daf9e0c12fd27` (`dscore.Dockerfile`), collar **0.25 s**,
+  overlaps **included** for the primary DER and a diagnostic DER with overlaps ignored.
+  Global DER/JER come from dscore's multi-file scoring (time-weighted), never an average
+  of per-file percentages. Per-file missed speech / false alarm / speaker error are not
+  exposed by this dscore version and are reported as unavailable.
+- System RTTM output uses anonymous `speaker_<n>` labels only; dscore performs the
+  speaker mapping. Reference identities are never copied into system output.
+
+Stages (resumable, state in `results/voxconverse-state.json`, git-ignored):
+
+```bash
+python3 benchmarks/diarization/download_voxconverse.py      # parallel download + integrity gate
+python3 benchmarks/diarization/select_voxconverse_subset.py # writes voxconverse_subset.txt
+python3 benchmarks/diarization/run_voxconverse.py --mode setup
+python3 benchmarks/diarization/run_voxconverse.py --mode known      # num_clusters = reference count
+python3 benchmarks/diarization/run_voxconverse.py --mode calibrate   # sweep 0.30 … 0.65
+python3 benchmarks/diarization/run_voxconverse.py --mode validate    # held-out split
+python3 benchmarks/diarization/run_voxconverse.py --mode repeat      # 3 repetitions
+python3 benchmarks/diarization/run_voxconverse.py --mode report      # voxconverse.{json,md}
+```
+
+Threshold selection follows the documented order (lowest calibration DER, then JER,
+then count MAE, then closest to 0.50); values within 1e-6 are treated as ties so
+floating-point noise cannot override the tie breakers. Validation data is never used
+for tuning, and note the selected thresholds sit at the upper end of the allowed sweep.
+
+## Earlier round: two-speaker playback-through-microphone test
+
+That test is a smoke/consistency check only and must not be used for model selection.
+
+### Playback test usage
+
 
 ```bash
 python3 benchmarks/diarization/run_benchmark.py --setup            # download + verify official models

@@ -58,3 +58,9 @@ benchmarks/diarization/results/latest.json
 benchmarks/diarization/results/latest.md
 benchmarks/diarization/results/runs/
 benchmarks/diarization/reference_turns.txt
+benchmarks/diarization/datasets/
+benchmarks/diarization/.tools/
+benchmarks/diarization/results/voxconverse.json
+benchmarks/diarization/results/voxconverse.md
+benchmarks/diarization/results/voxconverse-state.json
+benchmarks/diarization/results/scoring/

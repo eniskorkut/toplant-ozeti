@@ -14,6 +14,8 @@ import resource
 import time
 import wave
 
+from pathlib import Path
+
 import numpy as np
 import sherpa_onnx
 
@@ -45,6 +47,8 @@ def main() -> int:
     parser.add_argument("--min-duration-on", type=float, default=0.3)
     parser.add_argument("--min-duration-off", type=float, default=0.5)
     parser.add_argument("--label", default="run")
+    parser.add_argument("--rttm-out", default=None, help="write system RTTM here")
+    parser.add_argument("--rttm-file-id", default=None)
     args = parser.parse_args()
 
     samples, sample_rate = read_wav_16k_mono(args.audio)
@@ -83,6 +87,21 @@ def main() -> int:
     inference_seconds = time.perf_counter() - started
 
     segments = result.sort_by_start_time()
+
+    if args.rttm_out:
+        if not args.rttm_file_id:
+            raise SystemExit("--rttm-file-id is required with --rttm-out")
+        lines = [
+            "SPEAKER {file_id} 1 {start:.3f} {duration:.3f} <NA> <NA> speaker_{speaker} <NA> <NA>".format(
+                file_id=args.rttm_file_id,
+                start=segment.start,
+                duration=segment.end - segment.start,
+                speaker=segment.speaker,
+            )
+            for segment in segments
+        ]
+        Path(args.rttm_out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     payload = {
         "label": args.label,
         "embedding_model": args.embedding_model.rsplit("/", 1)[-1],
