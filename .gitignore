@@ -39,3 +39,9 @@ models/
 Thumbs.db
 .idea/
 .vscode/
+
+# STT benchmark caches and outputs (may contain speech content)
+benchmarks/stt/.cache/
+benchmarks/stt/results/latest.json
+benchmarks/stt/results/latest.md
+benchmarks/stt/results/runs/

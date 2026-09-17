@@ -1,0 +1,9 @@
+Bugünkü toplantıda yeni sürümün yayın planını değerlendireceğiz.
+Backend tarafındaki geliştirmelerin büyük bölümü tamamlandı.
+Frontend ekibinin iki küçük hatayı düzeltmesi gerekiyor.
+Güvenlik testlerinin perşembe günü tamamlanması planlanıyor.
+Testlerde kritik bir problem çıkmazsa yeni sürümü cuma öğleden sonra yayınlayacağız.
+Ayrıca toplantı kayıtlarının yalnızca yetkili kullanıcılar tarafından görüntülenmesi gerekiyor.
+Ses kayıtları sistemde saklanacak ancak geçici konuşmacı özellikleri işlem bittikten sonra silinecek.
+Bir sonraki toplantıda performans sonuçlarını, hata oranlarını ve kullanıcı geri bildirimlerini karşılaştıracağız.
+Bugünkü kararımız testleri tamamlamak, sonuçları kontrol etmek ve dağıtım öncesinde son bir değerlendirme yapmaktır.
