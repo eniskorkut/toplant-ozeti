@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.logging_config import configure_logging
 from app.routers.recordings import router as recordings_router
 
 
@@ -11,6 +12,7 @@ class HealthResponse(BaseModel):
 
 
 settings = get_settings()
+configure_logging(settings.log_level)
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 

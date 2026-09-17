@@ -45,3 +45,5 @@ benchmarks/stt/.cache/
 benchmarks/stt/results/latest.json
 benchmarks/stt/results/latest.md
 benchmarks/stt/results/runs/
+benchmarks/stt/results/matrix.json
+benchmarks/stt/results/matrix.md

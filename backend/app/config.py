@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_name: str = "Meeting Intelligence API"
     app_version: str = "0.1.0"
 
+    # Application log level (standard library logging, no extra dependency).
+    log_level: str = "INFO"
+
     # Storage: meeting audio and generated artifacts stay on the local filesystem.
     # Never committed to git (see .gitignore).
     data_dir: Path = REPO_ROOT / "data" / "meetings"

@@ -41,6 +41,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=build /opt/whisper.cpp/build/bin/whisper-quantize /usr/local/bin/whisper-quantize
 COPY --from=build /opt/whisper.cpp/models/download-ggml-model.sh /opt/whisper.cpp/models/download-ggml-model.sh
 COPY --from=build /opt/whisper.cpp/VERSION /opt/whisper.cpp/VERSION
 
