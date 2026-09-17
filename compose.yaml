@@ -1,0 +1,28 @@
+# Development compose file: the backend runs only in Docker.
+# The frontend intentionally stays outside Docker and runs natively (`npm run dev`).
+#
+# No `platform:` key is set on purpose, so the image is built for the host
+# architecture (Apple Silicon now, x86_64 on future Linux servers).
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: meeting-intelligence-backend:dev
+    ports:
+      - "8000:8000"
+    volumes:
+      # Application source, bind-mounted for reload during development.
+      # The container environment lives in /opt/venv, never in this mount.
+      - ./backend:/app
+      # Persistent local meeting data on the host. `app/config.py` resolves the
+      # data directory relative to the source tree, i.e. /data/meetings here.
+      - ./data:/data
+    environment:
+      MEETING_DATA_DIR: /data/meetings
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s

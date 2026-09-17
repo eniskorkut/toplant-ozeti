@@ -13,9 +13,11 @@ dependencies = [
     "python-multipart",
     "numpy",
     "soundfile",
-    # Pinned on purpose: sherpa-onnx >= 1.12 macOS arm64 wheels ship without
-    # libonnxruntime.dylib and fail to import. 1.10.46 is the newest release
-    # with self-contained macOS and manylinux wheels. See README "Known issues".
+    # Pinned deliberately. This dependency is validated in the Linux container,
+    # not on the host. 1.13.8 fails there: its manylinux wheels do not bundle
+    # libonnxruntime.so ("libonnxruntime.so: cannot open shared object file").
+    # 1.10.46 is the newest release whose Linux wheels are self-contained.
+    # See README "Known issues".
     "sherpa-onnx==1.10.46",
 ]
 

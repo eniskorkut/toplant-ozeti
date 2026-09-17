@@ -43,7 +43,11 @@ external LLM
 
 The backend is designed to stay **CPU-compatible**: `whisper.cpp` and `sherpa-onnx` both run on
 CPU, so the service can be developed on an Apple Silicon laptop and deployed later to a Linux
-CPU server without code changes.
+CPU server without code changes. To keep that promise reproducible, **the backend always runs
+inside a Linux Docker container** (development included) — the host Python environment is never
+the backend runtime.
+
+The frontend intentionally runs **outside** Docker, natively on the host.
 
 Meeting audio and generated artifacts are stored on the local filesystem under `data/meetings/`
 and are never committed to git.
@@ -52,15 +56,16 @@ and are never committed to git.
 
 | Layer              | Technology                                                        |
 | ------------------ | ----------------------------------------------------------------- |
-| Frontend           | Next.js (App Router), TypeScript, Tailwind CSS                    |
+| Frontend           | Next.js (App Router), TypeScript, Tailwind CSS — runs natively on the host |
 | Browser audio      | `MediaDevices.getUserMedia`, `MediaRecorder`                      |
+| Backend runtime    | Docker (`python:3.12-slim`), host architecture, Linux             |
 | Backend            | Python 3.12, FastAPI, SQLAlchemy, SQLite (`aiosqlite`), uvicorn   |
-| Audio processing   | ffmpeg                                                            |
+| Audio processing   | ffmpeg (installed inside the backend container)                   |
 | Speech-to-text     | whisper.cpp (CPU)                                                 |
 | Speaker diarization| sherpa-onnx (CPU)                                                 |
 | Meeting analysis   | External OpenAI-compatible LLM API (not implemented yet)          |
-| Package management | uv (backend), npm (frontend)                                      |
-| Storage            | Local filesystem (`data/meetings/`)                               |
+| Package management | uv (backend, inside Docker), npm (frontend, on host)              |
+| Storage            | Local filesystem (`data/meetings/`), mounted into the container  |
 
 ## Browser and security requirements
 
@@ -72,7 +77,11 @@ and are never committed to git.
 
 ## Platform support
 
-- Backend: macOS and Linux (CPU only).
+- Backend: runs in a Linux container on every host, so macOS development and Linux CPU
+  deployment share the same runtime (Python version, `sherpa-onnx` native libraries, ffmpeg).
+- Frontend: any modern browser; no platform-specific code.
+- Host Python is **not** the backend runtime, and host ffmpeg is **not** required to run the
+  backend.
 - Intentionally **not** used: MLX / mlx-whisper, Senko, CoreML, Metal-specific logic, CUDA,
   PyTorch, Electron, Tauri, native macOS or Windows APIs.
 
@@ -80,60 +89,68 @@ and are never committed to git.
 
 ```text
 .
-├── backend/          # FastAPI service (Python 3.12, uv)
+├── backend/          # FastAPI service (Python 3.12, uv) — run in Docker
 │   ├── app/          # application code
-│   └── tests/        # pytest suite
-├── frontend/         # Next.js app (App Router, TypeScript, Tailwind)
+│   ├── tests/        # pytest suite
+│   └── Dockerfile    # Linux + Python 3.12 backend image
+├── frontend/         # Next.js app (App Router, TypeScript, Tailwind) — run on host
 │   └── src/
 │       ├── app/      # routes
 │       └── lib/      # browser capability helpers
+├── compose.yaml      # backend development service (backend only)
 ├── data/
-│   └── meetings/     # local meeting storage (git-ignored, .gitkeep preserved)
+│   └── meetings/     # persistent local meeting storage (git-ignored, .gitkeep preserved)
 └── README.md
 ```
 
 ## Development
 
-### Backend
+Backend dependencies are **Docker-managed**. The container has its own environment inside the
+image (`/opt/venv`); the host `.venv` is never used and never mounted.
+
+### Backend (Docker only)
 
 ```bash
-cd backend
-uv sync
-uv run uvicorn app.main:app --reload   # http://127.0.0.1:8000
-uv run pytest
-uv run ruff check .
+docker compose build backend
+docker compose up -d backend
+docker compose logs -f backend
 ```
 
-`GET /health` → `{"status": "ok"}`
+- Backend URL: <http://localhost:8000>
+- Health: <http://localhost:8000/health> → `{"status":"ok"}`
+- Tests: `docker compose exec backend uv run --locked pytest`
+- Lint: `docker compose exec backend uv run --locked ruff check .`
+- Shell: `docker compose exec backend bash`
 
-### Frontend
+The source directory (`./backend`) is bind-mounted for reload, and `./data` is mounted so
+meeting data survives container recreation. Inside the container the data directory is
+`/data/meetings`.
+
+### Frontend (native, not Dockerized)
 
 ```bash
 cd frontend
 npm install
-npm run dev       # http://localhost:3000
-npm run lint
-npm run build
+npm run dev
 ```
 
-### System dependency: ffmpeg
+- Frontend URL: <http://localhost:3000>
+- Lint: `npm run lint`
+- Type check: `npx tsc --noEmit`
+- Build: `npm run build`
 
-ffmpeg must be available on the system `PATH` (the code never hard-codes platform paths).
-
-- macOS: `brew install ffmpeg`
-- Debian/Ubuntu: `sudo apt install ffmpeg`
-
-Backend code can report its availability via `app.services.ffmpeg` (`is_ffmpeg_available()`,
-`get_ffmpeg_info()`).
+If port 3000 is already occupied by an unrelated local application, Next.js may pick another
+port (for example 3001). That is expected; the default port is intentionally left as 3000.
 
 ## Known issues
 
-- **sherpa-onnx is pinned to `1.10.46`.** The currently published macOS arm64 wheels
-  (`sherpa-onnx >= 1.12`) do not bundle `libonnxruntime.dylib`, so importing the package fails
-  with `Library not loaded: @rpath/libonnxruntime.dylib`. `1.10.46` is the newest release whose
-  macOS and manylinux wheels are self-contained, keeps development and Linux deployment on the
-  same version, and already exposes the diarization API. Remove the pin once the upstream wheel
-  fix is released.
+- **sherpa-onnx is pinned to `1.10.46`.** The pin is validated inside the Linux backend
+  container, not on the host. `1.13.8` fails there with
+  `ImportError: libonnxruntime.so: cannot open shared object file` — its manylinux wheels do not
+  bundle the ONNX Runtime shared library. `1.10.46` is the newest release whose **Linux** wheels
+  are self-contained for both `x86_64` and `aarch64`, and it already exposes the diarization API
+  (`sherpa_onnx.OfflineSpeakerDiarization`). The pin should be revisited once upstream publishes
+  self-contained manylinux wheels.
 
 ## License
 
