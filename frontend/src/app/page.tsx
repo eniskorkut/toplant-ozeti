@@ -1,5 +1,6 @@
 import { BrowserCapabilities } from "@/components/browser-capabilities";
 import { Pipeline } from "@/components/pipeline";
+import { RecordingPanel } from "@/components/recording-panel";
 
 export default function Home() {
   return (
@@ -8,7 +9,7 @@ export default function Home() {
         <header className="enter">
           <span className="inline-flex items-center gap-2 rounded-full bg-zinc-500/10 px-3 py-1 text-xs text-zinc-600 dark:text-zinc-400">
             <span className="size-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-            Scaffolding — recording not implemented yet
+            Scaffolding — speech-to-text and diarization not implemented yet
           </span>
 
           <h1 className="mt-5 text-4xl font-semibold tracking-tight text-zinc-900 sm:text-5xl dark:text-zinc-50">
@@ -18,6 +19,8 @@ export default function Home() {
             Local-first meeting transcription
           </p>
         </header>
+
+        <RecordingPanel />
 
         <BrowserCapabilities />
 

@@ -1,18 +1,18 @@
 type Step = {
   name: string;
   detail: string;
-  status: "ready" | "planned";
+  status: "implemented" | "planned";
 };
 
 const browserSteps: Step[] = [
-  { name: "Microphone", detail: "MediaDevices.getUserMedia", status: "planned" },
-  { name: "MediaRecorder", detail: "browser audio encoding", status: "planned" },
-  { name: "Audio upload", detail: "multipart upload to the API", status: "planned" },
+  { name: "Microphone", detail: "MediaDevices.getUserMedia", status: "implemented" },
+  { name: "MediaRecorder", detail: "browser audio encoding, 1s chunks", status: "implemented" },
+  { name: "Audio upload", detail: "multipart upload to the API", status: "implemented" },
 ];
 
 const backendSteps: Step[] = [
-  { name: "FastAPI", detail: "service skeleton + /health", status: "ready" },
-  { name: "ffmpeg", detail: "availability check only", status: "ready" },
+  { name: "FastAPI", detail: "service + POST /api/recordings", status: "implemented" },
+  { name: "ffmpeg", detail: "single-pass conversion to MP3 + WAV", status: "implemented" },
   { name: "whisper.cpp", detail: "CPU speech-to-text", status: "planned" },
   { name: "sherpa-onnx", detail: "CPU speaker diarization", status: "planned" },
   { name: "Speaker-labelled transcript", detail: "merged output", status: "planned" },
@@ -20,10 +20,10 @@ const backendSteps: Step[] = [
 ];
 
 function StatusChip({ status }: { status: Step["status"] }) {
-  if (status === "ready") {
+  if (status === "implemented") {
     return (
       <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">
-        scaffolded
+        implemented
       </span>
     );
   }

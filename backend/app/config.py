@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     # Resolved through the system PATH on purpose: no platform-specific paths.
     ffmpeg_binary: str = "ffmpeg"
 
+    # Centralized CORS configuration for the host-native frontend during
+    # development. Never use "*" here.
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3100",
+        "http://127.0.0.1:3100",
+    ]
+
+    # Upper bound for a single ffmpeg conversion run.
+    ffmpeg_timeout_seconds: int = 1800
+
     @property
     def meetings_dir(self) -> Path:
         return self.data_dir

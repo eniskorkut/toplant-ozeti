@@ -6,9 +6,9 @@ analysis.
 The app runs entirely in a browser (macOS, Windows, Linux) and is served by a CPU-only backend.
 No native desktop shell, no Apple-specific runtime dependency.
 
-> **Status: scaffolding only.** Recording, transcription, diarization and LLM analysis are
-> **not implemented yet**. This repository currently contains the project skeleton, the
-> `/health` endpoint, browser capability detection helpers and an ffmpeg availability check.
+> **Status: audio capture only.** The browser recording → upload → ffmpeg conversion pipeline is
+> implemented. Speech-to-text, diarization, LLM analysis and meeting history are **not implemented
+> yet**.
 
 ## Architecture
 
@@ -48,6 +48,32 @@ inside a Linux Docker container** (development included) — the host Python env
 the backend runtime.
 
 The frontend intentionally runs **outside** Docker, natively on the host.
+
+### Audio capture pipeline (implemented)
+
+```text
+Microphone
+↓  getUserMedia (audio only, mono preferred)
+MediaRecorder (64 kbps requested, 1 s chunks, in-memory)
+↓  POST /api/recordings (multipart: audio, mime_type, client_duration_seconds)
+FastAPI (streams the upload to disk, never buffers it fully)
+↓  ffprobe validation → single ffmpeg process
+meeting.mp3   (mono, ~96 kbps, playback/archive)
+processing.wav (mono, 16 kHz, pcm_s16le, for STT + diarization)
+```
+
+- Recording format is negotiated with `MediaRecorder.isTypeSupported()`, preferring
+  `audio/webm;codecs=opus`, then `audio/webm`, then `audio/mp4`; if none is supported the recorder
+  is created without an explicit MIME type and the browser default is used (and reported).
+- Microphone constraints are audio-only and conservative for speech models
+  (`channelCount: {ideal: 1}`, echo cancellation / noise suppression / auto gain control preferred
+  off). Unsupported optional constraints are ignored, never fatal.
+- Uploads are validated by ffprobe (audio stream required); invalid or non-audio uploads are
+  rejected. The client filename is never used for filesystem paths.
+- Storage: `data/meetings/<recording_id>/` keeps `meeting.mp3` + `processing.wav`. The temporary
+  source file is deleted on success, and the whole directory is removed on failure.
+- The API returns measured metrics: input size, MP3 size, WAV size, duration, and ffmpeg
+  conversion time in milliseconds.
 
 Meeting audio and generated artifacts are stored on the local filesystem under `data/meetings/`
 and are never committed to git.
@@ -141,6 +167,18 @@ npm run dev
 
 If port 3000 is already occupied by an unrelated local application, Next.js may pick another
 port (for example 3001). That is expected; the default port is intentionally left as 3000.
+
+### Frontend API base URL
+
+Copy `frontend/.env.local.example` to `frontend/.env.local` and adjust if needed:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
+
+Development CORS origins are configured centrally in the backend
+(`MEETING_CORS_ORIGINS`, JSON list; defaults cover `localhost`/`127.0.0.1` on ports 3000 and 3100).
+Never use `allow_origins=["*"]`.
 
 ## Known issues
 
