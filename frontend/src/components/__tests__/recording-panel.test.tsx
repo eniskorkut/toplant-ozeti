@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecordingPanel } from "@/components/recording-panel";
 
+const POLL_INTERVAL = 2000;
+
 const start = vi.fn();
 const stop = vi.fn();
 const dispose = vi.fn();
@@ -77,6 +79,40 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+
+
+async function recordAndUpload() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
+  });
+}
+
+async function queueProcessing(speakerValue?: string) {
+  if (speakerValue) {
+    fireEvent.change(screen.getByLabelText("Konuşmacı sayısı"), {
+      target: { value: speakerValue },
+    });
+  }
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Transkripsiyonu Başlat" }));
+  });
+}
+
+function meetingWithStatus(status: string) {
+  return {
+    meeting_id: "m-new",
+    status,
+    created_at: "2026-09-18T12:00:00",
+    duration_seconds: 5,
+    requested_speaker_count: null,
+    processing_error: status === "failed" ? "işleme hatası" : null,
+    has_transcript: status === "completed",
+  };
+}
+
 describe("RecordingPanel", () => {
   it("runs record -> upload -> process and reports completion", async () => {
     vi.useFakeTimers();
@@ -125,15 +161,8 @@ describe("RecordingPanel", () => {
 
   it("sends null for automatic speaker count", async () => {
     render(<RecordingPanel />);
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Transkripsiyonu Başlat" }));
-    });
+    await recordAndUpload();
+    await queueProcessing();
 
     expect(processMeeting).toHaveBeenCalledWith("m-new", null);
   });
@@ -151,20 +180,88 @@ describe("RecordingPanel", () => {
     });
 
     render(<RecordingPanel />);
+    await recordAndUpload();
+    await queueProcessing();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Transkripsiyonu Başlat" }));
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2100);
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
     });
 
     expect(screen.getByRole("alert")).toHaveTextContent("whisper.cpp model not found");
+  });
+
+  it("keeps polling through repeated processing responses until completed", async () => {
+    vi.useFakeTimers();
+    getMeeting
+      .mockResolvedValueOnce(meetingWithStatus("processing"))
+      .mockResolvedValueOnce(meetingWithStatus("processing"))
+      .mockResolvedValueOnce(meetingWithStatus("processing"))
+      .mockResolvedValueOnce(meetingWithStatus("completed"));
+
+    render(<RecordingPanel />);
+    await recordAndUpload();
+    await queueProcessing();
+
+    // poll 1
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Ses yazıya dönüştürülüyor/)).toBeTruthy();
+
+    // polls 2 and 3 keep happening even though the UI already says "processing"
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(3);
+
+    // poll 4 completes the job and polling stops for good
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(4);
+    expect(screen.getByText("Transkripsiyon tamamlandı.")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL * 5);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(4);
+  });
+
+  it("polls through queued -> processing -> completed", async () => {
+    vi.useFakeTimers();
+    getMeeting
+      .mockResolvedValueOnce(meetingWithStatus("queued"))
+      .mockResolvedValueOnce(meetingWithStatus("processing"))
+      .mockResolvedValueOnce(meetingWithStatus("completed"));
+
+    render(<RecordingPanel />);
+    await recordAndUpload();
+    await queueProcessing();
+
+    for (let expected = 1; expected <= 3; expected += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL + 50);
+      });
+      expect(getMeeting).toHaveBeenCalledTimes(expected);
+    }
+
+    expect(screen.getByText("Transkripsiyon tamamlandı.")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL * 5);
+    });
+    expect(getMeeting).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends a known speaker count above 5 (8)", async () => {
+    render(<RecordingPanel />);
+    await recordAndUpload();
+    await queueProcessing("8");
+
+    expect(processMeeting).toHaveBeenCalledWith("m-new", 8);
   });
 
   it("shows a microphone error without uploading", async () => {

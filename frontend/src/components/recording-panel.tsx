@@ -23,7 +23,21 @@ type Status =
   | "failed";
 
 const POLL_INTERVAL_MS = 2000;
-const SPEAKER_OPTIONS = ["auto", "1", "2", "3", "4", "5"] as const;
+const SPEAKER_OPTIONS = [
+  "auto",
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+] as const;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -89,34 +103,44 @@ export function RecordingPanel() {
     return () => window.clearInterval(timer);
   }, [status]);
 
-  // One polling loop at a time: the effect only runs while a job is in flight.
+  // Explicit polling loop: exactly one outstanding timer/request at a time.
+  // The next poll is scheduled from inside the loop, so it never depends on a
+  // state update to the same value ("processing" -> "processing") to continue.
   useEffect(() => {
     if (status !== "processing" || !meetingId) return;
     let cancelled = false;
-    const timer = window.setTimeout(async () => {
+    let timer: number | undefined;
+
+    const poll = async () => {
       try {
         const meeting = await getMeeting(meetingId);
         if (cancelled) return;
         if (meeting.status === "completed") {
           setStatus("completed");
-        } else if (meeting.status === "failed") {
+          return;
+        }
+        if (meeting.status === "failed") {
           setProcessingError(meeting.processing_error ?? "İşleme başarısız oldu.");
           setStatus("failed");
-        } else {
-          setStatus("processing");
+          return;
         }
+        // Still queued/processing: keep polling.
+        timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       } catch (pollError) {
-        if (!cancelled) {
-          setProcessingError(
-            pollError instanceof Error ? pollError.message : "Durum alınamadı.",
-          );
-          setStatus("failed");
-        }
+        if (cancelled) return;
+        setProcessingError(
+          pollError instanceof Error ? pollError.message : "Durum alınamadı.",
+        );
+        setStatus("failed");
       }
-    }, POLL_INTERVAL_MS);
+    };
+
+    timer = window.setTimeout(poll, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
   }, [status, meetingId]);
 
