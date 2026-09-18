@@ -76,3 +76,44 @@ benchmarks/diarization-postprocess/results/
 
 # ElevenLabs benchmark outputs (private transcripts, raw provider responses)
 benchmarks/elevenlabs-stt/results/
+
+# --- safety hardening: secrets, runtime data, audio, model assets -------------
+# Whole data tree is runtime state; the tracked .gitkeep is re-included explicitly.
+data/
+!data/meetings/
+data/meetings/*
+!data/meetings/.gitkeep
+data/**/*.db
+data/**/*.db-wal
+data/**/*.db-shm
+
+# Any benchmark outputs that may contain speech, provider payloads or private text.
+**/results/
+**/private/
+**/raw/
+
+# Audio containers (never commit recordings).
+*.wav
+*.mp3
+*.webm
+*.m4a
+
+# Model assets (whisper.cpp, sherpa-onnx, future exports).
+*.onnx
+*.bin
+*.gguf
+*.pt
+*.pth
+*.safetensors
+
+# Keep the intentionally tracked safe metadata inside results directories.
+# (A file can only be re-included when its parent directory is not excluded.)
+!benchmarks/stt/results/
+benchmarks/stt/results/*
+!benchmarks/stt/results/.gitkeep
+!benchmarks/stt/results/model-metadata.json
+!benchmarks/stt/results/model-metadata-turbo.json
+!benchmarks/diarization/results/
+benchmarks/diarization/results/*
+!benchmarks/diarization/results/.gitkeep
+!benchmarks/diarization/results/model-metadata.json
