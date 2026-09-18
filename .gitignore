@@ -19,10 +19,10 @@ npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Env files
+# Env files (secrets; .env.example is the only tracked template)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Meeting data (audio + generated artifacts)
 data/meetings/*

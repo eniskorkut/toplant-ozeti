@@ -40,6 +40,21 @@ logger = logging.getLogger(__name__)
 MAX_ERROR_LENGTH = 500
 
 
+async def requeue_stale_meetings(session: AsyncSession) -> int:
+    """Recovery for the single-worker MVP: processing -> queued on worker startup.
+
+    Assumes exactly ONE worker instance. With multiple workers this would requeue a
+    job that another worker is still processing.
+    """
+    result = await session.execute(
+        update(Meeting)
+        .where(Meeting.status == MEETING_STATUS_PROCESSING)
+        .values(status=MEETING_STATUS_QUEUED)
+    )
+    await session.commit()
+    return result.rowcount or 0
+
+
 async def claim_next_meeting(session: AsyncSession) -> Meeting | None:
     """Atomically claim the oldest queued meeting, or return None."""
     candidate_id = (

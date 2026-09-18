@@ -19,6 +19,7 @@ dependencies = [
     # 1.10.46 is the newest release whose Linux wheels are self-contained.
     # See README "Known issues".
     "sherpa-onnx==1.10.46",
+    "httpx",
 ]
 
 [dependency-groups]

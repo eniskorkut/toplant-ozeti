@@ -28,6 +28,12 @@ MEETING_STATUSES = (
     MEETING_STATUS_FAILED,
 )
 
+# Analysis lifecycle is independent of the transcript lifecycle.
+ANALYSIS_STATUS_QUEUED = "queued"
+ANALYSIS_STATUS_PROCESSING = "processing"
+ANALYSIS_STATUS_COMPLETED = "completed"
+ANALYSIS_STATUS_FAILED = "failed"
+
 
 class Base(DeclarativeBase):
     pass
@@ -53,6 +59,42 @@ class Meeting(Base):
     turns: Mapped[list[TranscriptTurn]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan", order_by="TranscriptTurn.ordinal"
     )
+    analysis: Mapped[MeetingAnalysis | None] = relationship(
+        back_populates="meeting", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class MeetingAnalysis(Base):
+    """Grounded analysis result (summary/topics/decisions/actions/moments).
+
+    One-to-one with a meeting. LLM failures only ever touch this table: the
+    transcript, the meeting status and the audio artifacts stay untouched.
+    """
+
+    __tablename__ = "meeting_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    meeting_id: Mapped[str] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default=ANALYSIS_STATUS_QUEUED, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    topics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decisions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    important_moments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    repair_attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+    meeting: Mapped[Meeting] = relationship(back_populates="analysis")
 
 
 class TranscriptTurn(Base):

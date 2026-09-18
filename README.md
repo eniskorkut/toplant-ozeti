@@ -202,6 +202,37 @@ docker compose logs -f worker
 docker compose exec backend uv run --locked pytest -m integration -q   # real-model E2E
 ```
 
+### Grounded meeting analysis (backend)
+
+```text
+transcript completed
+        ↓
+POST /api/v1/meetings/{id}/analyze   (status: queued; 409 until the transcript is done)
+        ↓  worker priority: transcription jobs first, then analysis jobs
+provider (OpenAI-compatible chat completions, JSON-only response)
+        ↓  local Pydantic + semantic validation (ordinals must exist, owners must be
+           existing "Kişi N" or null, "Bilinmeyen" can never own an action)
+        ↓  one repair attempt if the first response is invalid, then failed
+meeting_analyses row (summary, topics, decisions, action items, important moments)
+        ↓
+GET /api/v1/meetings/{id}/analysis   (timestamps derived from persisted turns)
+```
+
+- The model only references transcript **ordinals**; the backend resolves them to
+  `timestamp_seconds`, so provider timestamps are never trusted.
+- LLM failures never touch the transcript, the meeting status or the audio artifacts;
+  analysis is an independent one-to-one row with its own status.
+- `MEETING_LLM_PROVIDER=mock` selects a deterministic local provider for tests and the
+  local E2E; the default is `openai_compatible`.
+- Secrets are read from `MEETING_LLM_BASE_URL`, `MEETING_LLM_API_KEY`,
+  `MEETING_LLM_MODEL` (never logged, never returned); `.env` files are git-ignored.
+- **Eligibility guard (temporary):** endpoints reserved for coding-agent traffic
+  (currently `https://opencode.ai/zen/go/v1`) are refused before any meeting content is
+  sent — `Configured LLM endpoint is restricted to coding-agent traffic and is not
+  enabled for meeting analysis.`
+- Long transcripts are rejected with a clear error instead of silent truncation
+  (`MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
+
 ### Frontend API base URL
 
 Copy `frontend/.env.local.example` to `frontend/.env.local` and adjust if needed:

@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -66,6 +67,21 @@ class Settings(BaseSettings):
 
     # Worker loop.
     worker_poll_seconds: float = 2.0
+
+    # --- meeting analysis (grounded LLM) --------------------------------------
+    # Provider selection: "openai_compatible" (default) or "mock" for tests/local E2E.
+    llm_provider: str = "openai_compatible"
+    llm_base_url: str | None = None
+    # SecretStr keeps the key out of logs and reprs.
+    llm_api_key: SecretStr | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: float = 60.0
+    llm_max_transcript_chars: int = 120_000
+    llm_max_retries: int = 2
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 
     @property
     def meetings_dir(self) -> Path:
