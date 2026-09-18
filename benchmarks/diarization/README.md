@@ -110,7 +110,19 @@ python3 benchmarks/diarization/run_voxconverse.py --mode report      # voxconver
 Threshold selection follows the documented order (lowest calibration DER, then JER,
 then count MAE, then closest to 0.50); values within 1e-6 are treated as ties so
 floating-point noise cannot override the tie breakers. Validation data is never used
-for tuning, and note the selected thresholds sit at the upper end of the allowed sweep.
+for tuning.
+
+The sweep now covers **0.30–0.90** (the original 0.30–0.65 plus an extension). The
+selected thresholds are interior — 0.75 (3D-Speaker) and 0.80 (TitaNet) — and DER
+worsens again at 0.90, so the optimum is not boundary-limited. Known-count results are
+reported as a control with **measured** count accuracy/MAE (forcing a cluster count does
+not guarantee that many non-empty clusters).
+
+Repeatability is reported together with boundary comparison: segments are matched per
+file by index after sorting by time, and if segment counts differ between repetitions the
+comparison is reported as ambiguous instead of inventing a shift. The TitaNet thread
+diagnostic (8 vs 1 thread) showed the same single unstable file at both thread counts,
+so the measurements do not support thread count as the cause of the non-determinism.
 
 ## Earlier round: two-speaker playback-through-microphone test
 

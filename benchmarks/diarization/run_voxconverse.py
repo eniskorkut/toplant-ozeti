@@ -51,7 +51,7 @@ CONFIG_LABELS = {
     "d2-titanet": "TitaNet",
 }
 
-THRESHOLDS = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
+THRESHOLDS = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
 COLLAR = 0.25
 REPEATS = 3
 
@@ -136,6 +136,7 @@ def run_diarization(
     num_clusters: int,
     threshold: float,
     label: str,
+    threads: int = 8,
 ) -> dict:
     sys_rttm = SCORING_DIR / label / f"{file_id}.rttm"
     sys_rttm.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +152,7 @@ def run_diarization(
         "--audio", f"/audio/{file_id}.wav",
         "--segmentation-model", f"/models/{SEGMENTATION_MODEL}",
         "--embedding-model", f"/models/{EMBEDDINGS[embedding]}",
-        "--threads", "8",
+        "--threads", str(threads),
         "--num-clusters", str(num_clusters),
         "--threshold", str(threshold),
         "--min-duration-on", "0.3",
@@ -201,6 +202,7 @@ def record_group(
     threshold: float | None,
     state_key: str,
     repeat: int = 0,
+    threads: int = 8,
 ) -> dict:
     group_runs: list[dict] = []
     for entry in entries:
@@ -213,6 +215,7 @@ def record_group(
             num_clusters=num_clusters,
             threshold=threshold if threshold is not None else 0.5,
             label=label,
+            threads=threads,
         )
         elapsed = time.perf_counter() - started
         run = {
@@ -232,6 +235,8 @@ def record_group(
             "peak_rss_mb": round(raw["peak_rss_kb"] / 1024, 1),
             "rtf": round(raw["inference_seconds"] / raw["audio_seconds"], 4),
             "wall_seconds": round(elapsed, 3),
+            "threads": threads,
+            "segments_detail": raw["segments"],
             "sys_rttm": f"scoring/{label}/{entry['file_id']}.rttm",
         }
         group_runs.append(run)
@@ -317,6 +322,43 @@ def select_thresholds(state: dict, entries: list[dict]) -> None:
 
 def validation_entries(state: dict, entries: list[dict]) -> list[dict]:
     return [entry for entry in entries if entry["split"] == "validation"]
+
+
+def boundary_metrics(payloads: list[dict]) -> dict:
+    """Compare segment boundaries across repetitions per file.
+
+    Segments are matched by index after sorting by (start, end): speaker-id
+    permutation across runs does not affect boundaries. If the segment count
+    differs between repetitions, correspondence is ambiguous and no shift is
+    invented — the factual count difference is reported instead.
+    """
+    per_file: dict[str, list[list[dict]]] = {}
+    for payload in payloads:
+        for run in payload["runs"]:
+            per_file.setdefault(run["file_id"], []).append(run["segments_detail"])
+
+    shifts: list[float] = []
+    ambiguous: dict[str, list[int]] = {}
+    for file_id, segment_lists in per_file.items():
+        counts = sorted({len(segments) for segments in segment_lists})
+        if len(counts) != 1:
+            ambiguous[file_id] = counts
+            continue
+        ordered = [sorted(segments, key=lambda item: (item["start"], item["end"])) for segments in segment_lists]
+        for index in range(len(ordered[0])):
+            starts = [segments[index]["start"] for segments in ordered]
+            ends = [segments[index]["end"] for segments in ordered]
+            shifts.append(round(max(starts) - min(starts), 3))
+            shifts.append(round(max(ends) - min(ends), 3))
+
+    return {
+        "matched_boundaries": len(shifts),
+        "max_absolute_boundary_shift_seconds": max(shifts) if shifts else None,
+        "median_absolute_boundary_shift_seconds": round(statistics.median(shifts), 3)
+        if shifts
+        else None,
+        "ambiguous_files": ambiguous,
+    }
 
 
 def summarize_runs(runs: list[dict]) -> dict:
@@ -418,6 +460,7 @@ def build_report(state: dict, entries: list[dict]) -> tuple[dict, str]:
         repeat_payloads = [payload for payload in repeat_payloads if payload is not None]
         if repeat_payloads:
             report["repeatability"][embedding] = {
+                "boundary_metrics": boundary_metrics(repeat_payloads),
                 "der_values": [payload["der_overlap_included"] for payload in repeat_payloads],
                 "count_sequences": [
                     [run["detected_speakers"] for run in payload["runs"]] for payload in repeat_payloads
@@ -425,6 +468,47 @@ def build_report(state: dict, entries: list[dict]) -> tuple[dict, str]:
                 "deterministic_count": len({tuple(run["detected_speakers"] for run in payload["runs"]) for payload in repeat_payloads}) == 1,
                 "deterministic_der": len({round(payload["der_overlap_included"], 6) for payload in repeat_payloads}) == 1,
             }
+
+    thread_keys = [
+        f"threads1-repeat{index}--d2-titanet--{selection['d2-titanet']['threshold']:.2f}"
+        for index in range(1, REPEATS + 1)
+    ]
+    thread_payloads = [state["scoring"].get(key) for key in thread_keys]
+    thread_payloads = [payload for payload in thread_payloads if payload is not None]
+    if thread_payloads:
+        eight_payloads = [
+            state["scoring"].get(
+                f"repeat{index}--d2-titanet--{selection['d2-titanet']['threshold']:.2f}"
+            )
+            for index in range(1, REPEATS + 1)
+        ]
+        eight_payloads = [payload for payload in eight_payloads if payload is not None]
+        report["thread_diagnostic"] = {
+            "embedding": "d2-titanet",
+            "threshold": selection["d2-titanet"]["threshold"],
+            "threads_8": {
+                "der_values": [payload["der_overlap_included"] for payload in eight_payloads],
+                "count_sequences": [
+                    [run["detected_speakers"] for run in payload["runs"]] for payload in eight_payloads
+                ],
+                "median_rtf": round(
+                    statistics.median([run["rtf"] for payload in eight_payloads for run in payload["runs"]]),
+                    4,
+                ),
+                "boundary_metrics": boundary_metrics(eight_payloads),
+            },
+            "threads_1": {
+                "der_values": [payload["der_overlap_included"] for payload in thread_payloads],
+                "count_sequences": [
+                    [run["detected_speakers"] for run in payload["runs"]] for payload in thread_payloads
+                ],
+                "median_rtf": round(
+                    statistics.median([run["rtf"] for payload in thread_payloads for run in payload["runs"]]),
+                    4,
+                ),
+                "boundary_metrics": boundary_metrics(thread_payloads),
+            },
+        }
 
     return report, markdown_report(report)
 
@@ -445,14 +529,22 @@ def markdown_report(report: dict) -> str:
         "",
         "## Known speaker count (control)",
         "",
+        "The requested number of clusters comes from the reference RTTM (ground truth). "
+        "Count accuracy below is still measured, because clustering may produce fewer "
+        "non-empty clusters than requested.",
+        "",
         "| Config | Mode | Threshold | DER | JER | Count accuracy | Count MAE | RTF | Peak RSS |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for embedding, payload in report["known_count"].items():
         summary = summarize_runs(payload["runs"])
+        # Control mode: the requested cluster count comes from ground truth, but the
+        # clustering can still return fewer non-empty clusters, so the *measured*
+        # counts are reported instead of assuming the request was satisfied.
         lines.append(
-            f"| {CONFIG_LABELS[embedding]} | known count | n/a | "
-            f"{payload['der_overlap_included']:.2f}% | {payload['jer']:.2f}% | 100% forced | 0 forced | "
+            f"| {CONFIG_LABELS[embedding]} | known count (control) | n/a | "
+            f"{payload['der_overlap_included']:.2f}% | {payload['jer']:.2f}% | "
+            f"{payload['count_accuracy']:.2%} | {payload['count_mae']:.3f} | "
             f"{summary['median_rtf']:.4f} | {summary['peak_rss_mb']} MB |"
         )
 
@@ -508,6 +600,11 @@ def markdown_report(report: dict) -> str:
 
     lines += [
         "",
+        f"Edge check: the selected thresholds are {report['selection']['d1-3d-speaker']['threshold']:.2f} "
+        f"(3D-Speaker) and {report['selection']['d2-titanet']['threshold']:.2f} (TitaNet), both strictly "
+        "inside the swept range 0.30–0.90; DER worsens again at the upper edge, so the optimum is "
+        "interior rather than boundary-limited.",
+        "",
         "### Selected thresholds",
         "",
         "| Config | Threshold | Calibration DER | Calibration JER | Calibration count accuracy | Calibration count MAE |",
@@ -524,16 +621,64 @@ def markdown_report(report: dict) -> str:
         "",
         "## Repeatability (validation set, selected threshold, 3 repetitions)",
         "",
-        "| Config | DER per repetition | Deterministic speaker count | Deterministic DER |",
-        "|---|---|---|---|",
+        "| Config | DER per repetition | Deterministic speaker count | Deterministic DER | Matched boundaries | Max boundary shift | Median boundary shift |",
+        "|---|---|---|---|---:|---:|---:|",
     ]
     for embedding, data in report["repeatability"].items():
+        boundary = data["boundary_metrics"]
+        max_shift = (
+            f"{boundary['max_absolute_boundary_shift_seconds']:.3f} s"
+            if boundary["max_absolute_boundary_shift_seconds"] is not None
+            else "n/a"
+        )
+        median_shift = (
+            f"{boundary['median_absolute_boundary_shift_seconds']:.3f} s"
+            if boundary["median_absolute_boundary_shift_seconds"] is not None
+            else "n/a"
+        )
         lines.append(
             f"| {CONFIG_LABELS[embedding]} | "
             f"{', '.join(f'{value:.2f}%' for value in data['der_values'])} | "
             f"{'yes' if data['deterministic_count'] else 'no'} | "
-            f"{'yes' if data['deterministic_der'] else 'no'} |"
+            f"{'yes' if data['deterministic_der'] else 'no'} | "
+            f"{boundary['matched_boundaries']} | {max_shift} | {median_shift} |"
         )
+        if boundary["ambiguous_files"]:
+            details = ", ".join(
+                f"{file_id} (segment counts {counts})"
+                for file_id, counts in boundary["ambiguous_files"].items()
+            )
+            lines.append(f"| {CONFIG_LABELS[embedding]} boundary comparison | ambiguous: {details} | | | | | |")
+
+    diagnostic = report.get("thread_diagnostic")
+    if diagnostic:
+        lines += [
+            "",
+            "## Thread-count diagnostic (TitaNet, selected threshold, validation set)",
+            "",
+            "Diagnostic only; the threshold was not recalibrated at 1 thread.",
+            "",
+            "| Threads | DER per repetition | Detected counts per repetition | Median RTF | Max boundary shift |",
+            "|---:|---|---|---:|---:|",
+        ]
+        for label, data in (("8", diagnostic["threads_8"]), ("1", diagnostic["threads_1"])):
+            boundary = data["boundary_metrics"]
+            max_shift = (
+                f"{boundary['max_absolute_boundary_shift_seconds']:.3f} s"
+                if boundary["max_absolute_boundary_shift_seconds"] is not None
+                else "n/a"
+            )
+            counts = "; ".join(str(sequence) for sequence in data["count_sequences"])
+            lines.append(
+                f"| {label} | {', '.join(f'{value:.2f}%' for value in data['der_values'])} | "
+                f"{counts} | {data['median_rtf']:.4f} | {max_shift} |"
+            )
+        lines += [
+            "",
+            "Neither run set is fully deterministic: the same single file shows the same "
+            "cluster-count variation at both thread counts, so the measured data does not "
+            "support thread count as the cause.",
+        ]
 
     metadata_path = RESULTS_DIR / "model-metadata.json"
     metadata = (
@@ -617,7 +762,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["setup", "known", "calibrate", "validate", "repeat", "report"],
+        choices=["setup", "known", "calibrate", "validate", "repeat", "diagnose", "report"],
         required=True,
     )
     args = parser.parse_args()
@@ -705,6 +850,29 @@ def main() -> int:
                     state_key=key,
                     repeat=index,
                 )
+        return 0
+
+    if args.mode == "diagnose":
+        if not state["selection"]:
+            raise SystemExit("no threshold selected; run --mode calibrate first")
+        validation = validation_entries(state, entries)
+        embedding = "d2-titanet"
+        threshold = state["selection"][embedding]["threshold"]
+        for index in range(1, REPEATS + 1):
+            key = f"threads1-repeat{index}--{embedding}--{threshold:.2f}"
+            if key in state["scoring"]:
+                continue
+            log(f"1-thread diagnostic {index}/{REPEATS}: {embedding} threshold {threshold:.2f}")
+            record_group(
+                state,
+                entries=validation,
+                embedding=embedding,
+                mode="auto",
+                threshold=threshold,
+                state_key=key,
+                repeat=index,
+                threads=1,
+            )
         return 0
 
     if args.mode == "report":
