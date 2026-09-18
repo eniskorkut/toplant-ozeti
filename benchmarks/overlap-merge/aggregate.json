@@ -314,6 +314,21 @@
         "coverage_gap": 5
       }
     },
+    "M0n-heuristic-nfa": {
+      "words": 96,
+      "assigned_words": 75,
+      "unresolved_words": 21,
+      "distinct_speakers": 4,
+      "turns": 14,
+      "speaker_changes": 13,
+      "rapid_flips": 1,
+      "unknown_turns": 6,
+      "newly_resolved_words": 0,
+      "unresolved_causes": {
+        "overlap_region": 18,
+        "coverage_gap": 3
+      }
+    },
     "M1-dtw": {
       "words": 96,
       "assigned_words": 79,

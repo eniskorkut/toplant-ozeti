@@ -344,6 +344,7 @@ def main() -> int:
     segments = diarization_segments(REAL_MEETING, language="tr")
     for label, words, use_resolver in (
         ("M0-baseline", heuristic_words, False),
+        ("M0n-heuristic-nfa", nfa_words, False),
         ("M1-dtw", dtw_words, False),
         ("M2-context", dtw_words, True),
     ):
@@ -363,6 +364,7 @@ def main() -> int:
     segment_speakers = {}
     for label, words, use_resolver in (
         ("M0", heuristic_words, False),
+        ("M0n", nfa_words, False),
         ("M1", dtw_words, False),
         ("M2", dtw_words, True),
     ):
