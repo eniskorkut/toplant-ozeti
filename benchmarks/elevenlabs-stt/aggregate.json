@@ -1,0 +1,208 @@
+{
+  "provider": "elevenlabs",
+  "model": "scribe_v2",
+  "requests": {
+    "requests": 6,
+    "budget": 6,
+    "total_audio_seconds_sent": 323.743,
+    "calls": [
+      {
+        "label": "real-known4",
+        "audio_seconds": 42.84,
+        "latency_seconds": 4.238,
+        "status": 200
+      },
+      {
+        "label": "real-auto",
+        "audio_seconds": 42.84,
+        "latency_seconds": 4.851,
+        "status": 200
+      },
+      {
+        "label": "turkish-far",
+        "audio_seconds": 47.22,
+        "latency_seconds": 2.887,
+        "status": 200
+      },
+      {
+        "label": "turkish-near",
+        "audio_seconds": 45.48,
+        "latency_seconds": 2.155,
+        "status": 200
+      },
+      {
+        "label": "voxconverse-whmpa",
+        "audio_seconds": 53.856,
+        "latency_seconds": 2.572,
+        "status": 200
+      },
+      {
+        "label": "voxconverse-wjhgf",
+        "audio_seconds": 91.507,
+        "latency_seconds": 3.944,
+        "status": 200
+      }
+    ]
+  },
+  "retention_note": "normal ElevenLabs retention may apply (free/dev account; no zero-retention mode requested)",
+  "voxconverse": {
+    "whmpa": {
+      "detected_speakers": 2,
+      "agreement": 0.9724,
+      "wrong_attribution_rate": 0.0276,
+      "wrong_attribution_words": 4,
+      "untagged_words": 0,
+      "unresolved_rate": 0.0,
+      "turns": 4,
+      "rapid_flips": 1,
+      "compared_words": 145
+    },
+    "wjhgf": {
+      "detected_speakers": 5,
+      "agreement": 0.8111,
+      "wrong_attribution_rate": 0.1889,
+      "wrong_attribution_words": 51,
+      "untagged_words": 0,
+      "unresolved_rate": 0.0,
+      "turns": 18,
+      "rapid_flips": 2,
+      "compared_words": 270
+    }
+  },
+  "turkish": {
+    "elevenlabs": {
+      "far": {
+        "wer": 0.0476,
+        "substitutions": 3,
+        "deletions": 0,
+        "insertions": 1,
+        "hypothesis_words": 85
+      },
+      "near": {
+        "wer": 0.0119,
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 0,
+        "hypothesis_words": 84
+      },
+      "combined": {
+        "substitutions": 4,
+        "deletions": 0,
+        "insertions": 1,
+        "reference_words": 168,
+        "total_errors": 5,
+        "wer": 0.0298
+      }
+    },
+    "local_heuristic": {
+      "far": {
+        "wer": 0.1429,
+        "words": 84
+      },
+      "near": {
+        "wer": 0.2024,
+        "words": 86
+      },
+      "combined_wer": 0.1726
+    }
+  },
+  "real_meeting": {
+    "local_production": {
+      "words": 106,
+      "assigned": 85,
+      "unresolved": 21,
+      "speakers": 4,
+      "turns": 13,
+      "rapid_flips": 0
+    },
+    "local_tuned_0_0": {
+      "words": 106,
+      "assigned": 91,
+      "unresolved": 15,
+      "speakers": 4,
+      "turns": 17,
+      "rapid_flips": 3
+    },
+    "elevenlabs_known4": {
+      "words": 99,
+      "assigned": 99,
+      "unresolved": 0,
+      "speakers": 2,
+      "turns": 14,
+      "rapid_flips": 2,
+      "latency_seconds": 4.238
+    },
+    "elevenlabs_auto": {
+      "words": 110,
+      "assigned": 110,
+      "unresolved": 0,
+      "speakers": 3,
+      "turns": 22,
+      "rapid_flips": 3,
+      "latency_seconds": 4.851
+    },
+    "local_stt_decoding_seconds": 14.412,
+    "local_diarization_rtf_reference": 0.084
+  },
+  "local_spot_check": {
+    "whmpa": {
+      "reference_speakers": 2,
+      "on0.30_off0.50": {
+        "detected_speakers": 1,
+        "segments": 1,
+        "agreement": 0.9281,
+        "wrong_attribution_rate": 0.0719,
+        "wrong_attribution_words": 10,
+        "unresolved_words": 0,
+        "unresolved_rate": 0.0,
+        "compared_words": 139,
+        "turns": 1,
+        "rapid_flips": 0
+      },
+      "on0.00_off0.00": {
+        "detected_speakers": 2,
+        "segments": 2,
+        "agreement": 0.9281,
+        "wrong_attribution_rate": 0.0719,
+        "wrong_attribution_words": 10,
+        "unresolved_words": 0,
+        "unresolved_rate": 0.0,
+        "compared_words": 139,
+        "turns": 1,
+        "rapid_flips": 0
+      }
+    },
+    "wjhgf": {
+      "reference_speakers": 5,
+      "on0.30_off0.50": {
+        "detected_speakers": 6,
+        "segments": 12,
+        "agreement": 0.7626,
+        "wrong_attribution_rate": 0.2374,
+        "wrong_attribution_words": 52,
+        "unresolved_words": 26,
+        "unresolved_rate": 0.1048,
+        "compared_words": 219,
+        "turns": 20,
+        "rapid_flips": 2
+      },
+      "on0.00_off0.00": {
+        "detected_speakers": 6,
+        "segments": 16,
+        "agreement": 0.7297,
+        "wrong_attribution_rate": 0.2703,
+        "wrong_attribution_words": 60,
+        "unresolved_words": 23,
+        "unresolved_rate": 0.0927,
+        "compared_words": 222,
+        "turns": 21,
+        "rapid_flips": 3
+      }
+    }
+  },
+  "local_turkish_reference": {
+    "far": 0.1429,
+    "near": 0.2024,
+    "combined": 0.1726
+  }
+}

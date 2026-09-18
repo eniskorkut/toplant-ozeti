@@ -73,3 +73,6 @@ data/*.db-shm
 benchmarks/real-meeting-diagnostic/output/
 benchmarks/overlap-merge/results/
 benchmarks/diarization-postprocess/results/
+
+# ElevenLabs benchmark outputs (private transcripts, raw provider responses)
+benchmarks/elevenlabs-stt/results/
