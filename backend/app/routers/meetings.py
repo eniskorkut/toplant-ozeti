@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Path as PathParam
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -52,6 +53,21 @@ class MeetingStatus(BaseModel):
     requested_speaker_count: int | None
     processing_error: str | None
     has_transcript: bool
+
+
+class MeetingSummary(BaseModel):
+    meeting_id: str
+    created_at: str
+    duration_seconds: float | None
+    status: str
+    requested_speaker_count: int | None
+    has_transcript: bool
+    analysis_status: str | None
+
+
+class MeetingList(BaseModel):
+    meetings: list[MeetingSummary]
+    count: int
 
 
 class DecisionOut(BaseModel):
@@ -165,6 +181,63 @@ async def queue_processing(
     await session.refresh(meeting)
     logger.info("meeting %s queued (speaker_count=%s)", meeting.id, request.speaker_count)
     return _meeting_status(meeting, False)
+
+
+@router.get("", response_model=MeetingList)
+async def list_meetings(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> MeetingList:
+    """Newest first. Transcript text is never included in the list."""
+    has_turns = exists(
+        select(TranscriptTurn.id).where(TranscriptTurn.meeting_id == Meeting.id)
+    )
+    rows = (
+        await session.execute(
+            select(Meeting, has_turns, MeetingAnalysis.status)
+            .outerjoin(MeetingAnalysis, MeetingAnalysis.meeting_id == Meeting.id)
+            .order_by(Meeting.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    meetings = [
+        MeetingSummary(
+            meeting_id=meeting.id,
+            created_at=meeting.created_at.isoformat(),
+            duration_seconds=meeting.duration_seconds,
+            status=meeting.status,
+            requested_speaker_count=meeting.requested_speaker_count,
+            has_transcript=bool(turns),
+            analysis_status=analysis_status,
+        )
+        for meeting, turns, analysis_status in rows
+    ]
+    return MeetingList(meetings=meetings, count=len(meetings))
+
+
+@router.get("/{meeting_id}/audio")
+async def get_audio(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> FileResponse:
+    """Stream the stored MP3. Only the persisted relative path is used; the WAV is
+    never exposed and arbitrary filesystem paths can not be requested."""
+    meeting = await _get_meeting(session, meeting_id)
+
+    meetings_root = settings.meetings_dir.resolve()
+    audio_path = (meetings_root / meeting.audio_mp3_path).resolve()
+    if meetings_root not in audio_path.parents or not audio_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio not found")
+
+    return FileResponse(
+        audio_path,
+        media_type="audio/mpeg",
+        filename=f"{meeting_id}.mp3",
+    )
 
 
 @router.post(

@@ -1,4 +1,5 @@
 import { BrowserCapabilities } from "@/components/browser-capabilities";
+import { MeetingHistory } from "@/components/meeting-history";
 import { Pipeline } from "@/components/pipeline";
 import { RecordingPanel } from "@/components/recording-panel";
 
@@ -21,6 +22,8 @@ export default function Home() {
         </header>
 
         <RecordingPanel />
+
+        <MeetingHistory />
 
         <BrowserCapabilities />
 

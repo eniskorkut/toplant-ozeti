@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_transcript_chars: int = 120_000
     llm_max_retries: int = 2
+    # Not every OpenAI-compatible endpoint accepts response_format; only send it
+    # when the operator explicitly enables JSON mode.
+    llm_json_mode: bool = False
 
     @property
     def llm_configured(self) -> bool:

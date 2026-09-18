@@ -104,6 +104,7 @@ class OpenAICompatibleProvider:
         self._model = settings.llm_model
         self._timeout = settings.llm_timeout_seconds
         self._max_retries = settings.llm_max_retries
+        self._json_mode = settings.llm_json_mode
 
     @property
     def provider_name(self) -> str:
@@ -120,8 +121,11 @@ class OpenAICompatibleProvider:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0,
-            "response_format": {"type": "json_object"},
         }
+        # Portable default: rely on JSON-only prompting + local validation. The
+        # response_format hint is only sent when explicitly enabled.
+        if self._json_mode:
+            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

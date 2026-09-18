@@ -233,6 +233,22 @@ GET /api/v1/meetings/{id}/analysis   (timestamps derived from persisted turns)
 - Long transcripts are rejected with a clear error instead of silent truncation
   (`MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
 
+### Frontend meeting workflow
+
+- `/` — record (MediaRecorder, unchanged MIME negotiation), optional speaker count
+  (`Otomatik` → `speaker_count=null`), upload, queue transcription, status polling
+  (one timer at a time, stops on completed/failed) and the meeting history.
+- `/meetings/[id]` — reconstructs everything from the backend on refresh: status,
+  MP3 player (native `<audio>`, served by `GET /api/v1/meetings/{id}/audio` with
+  Range support), speaker-attributed transcript and the analysis sections.
+- Clicking any timestamp (transcript turn, decision, action item, important moment)
+  seeks the audio player to `timestamp_seconds` and starts playback.
+- Analysis: `Toplantıyı Analiz Et` → `POST /analyze` → polling → sections
+  (Özet / Konular / Kararlar / Aksiyonlar / Önemli Anlar). If no eligible LLM provider
+  is configured the backend returns 503 and the UI shows a non-destructive message
+  while the transcript stays fully usable.
+- Frontend tests (vitest + Testing Library): `cd frontend && npm test`.
+
 ### Frontend API base URL
 
 Copy `frontend/.env.local.example` to `frontend/.env.local` and adjust if needed:

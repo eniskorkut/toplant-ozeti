@@ -176,6 +176,7 @@ def test_restricted_provider_is_refused_and_sends_nothing(
         "httpx.post", lambda *args, **kwargs: calls.append(args) or pytest.fail("request sent")
     )
     settings = Settings(
+        llm_provider="openai_compatible",
         llm_base_url="https://opencode.ai/zen/go/v1",
         llm_api_key="test-key-not-real",
         llm_model="test-model",
@@ -189,5 +190,9 @@ def test_restricted_provider_is_refused_and_sends_nothing(
 
 
 def test_unconfigured_provider_fails_clearly() -> None:
+    # Hermetic: never inherit MEETING_* values from the container environment.
+    settings = Settings(
+        llm_provider="openai_compatible", llm_base_url=None, llm_api_key=None, llm_model=None
+    )
     with pytest.raises(LlmConfigurationError):
-        build_provider(Settings())
+        build_provider(settings)
