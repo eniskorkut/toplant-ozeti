@@ -12,6 +12,7 @@ const uploadRecording = vi.fn();
 const processMeeting = vi.fn();
 const getMeeting = vi.fn();
 const getTranscriptionProviders = vi.fn();
+const getElevenLabsUsage = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -21,6 +22,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     processMeeting: (...args: unknown[]) => processMeeting(...args),
     getMeeting: (...args: unknown[]) => getMeeting(...args),
     getTranscriptionProviders: (...args: unknown[]) => getTranscriptionProviders(...args),
+    getElevenLabsUsage: (...args: unknown[]) => getElevenLabsUsage(...args),
   };
 });
 
@@ -52,6 +54,7 @@ function capabilities(elevenlabsAvailable: boolean) {
 
 beforeEach(() => {
   getTranscriptionProviders.mockResolvedValue(capabilities(false));
+  getElevenLabsUsage.mockResolvedValue({ available: false, reason: "usage_scope_unavailable" });
   start.mockResolvedValue({
     requestedMimeType: "audio/webm;codecs=opus",
     requestedBitsPerSecond: 64000,
@@ -368,5 +371,68 @@ describe("RecordingPanel provider selection", () => {
     const startButton = screen.getByRole("button", { name: "Transkripsiyonu Başlat" });
     expect(startButton).not.toBeDisabled();
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+});
+
+
+describe("RecordingPanel ElevenLabs usage display", () => {
+  it("shows a compact usage summary when the API is available", async () => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+    getElevenLabsUsage.mockResolvedValue({
+      available: true,
+      tier: "free",
+      usage: 1200,
+      limit: 10000,
+      remaining: 8800,
+      reset_at: "2026-10-09T08:53:20+00:00",
+    });
+
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
+    });
+
+    expect(await screen.findByText(/Plan:/)).toBeTruthy();
+    expect(screen.getByText(/Kullanım:/)).toBeTruthy();
+    expect(screen.getByText("8800")).toBeTruthy();
+    expect(screen.getByText(/Yenilenme:/)).toBeTruthy();
+  });
+
+  it("shows the panel guidance when usage scope is unavailable", async () => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
+    });
+
+    expect(
+      await screen.findByText(/Developers → Analytics → Usage/),
+    ).toBeTruthy();
+  });
+
+  it("keeps provider selection usable when the usage lookup fails", async () => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+    getElevenLabsUsage.mockRejectedValue(new Error("usage request failed"));
+
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
+    });
+
+    expect(await screen.findByText(/Developers → Analytics → Usage/)).toBeTruthy();
+    expect(screen.getByRole("checkbox")).toBeTruthy();
   });
 });

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
+from app.services.elevenlabs_usage import fetch_usage
 
 router = APIRouter(prefix="/api/v1/transcription", tags=["transcription"])
 
@@ -50,4 +51,41 @@ async def list_providers(
                 label=PROVIDER_LABELS["elevenlabs"],
             ),
         ],
+    )
+
+
+class ElevenLabsUsageResponse(BaseModel):
+    available: bool
+    tier: str | None = None
+    status: str | None = None
+    usage: int | None = None
+    limit: int | None = None
+    remaining: int | None = None
+    reset_at: str | None = None
+    reason: str | None = None
+
+
+@router.get(
+    "/providers/elevenlabs/usage",
+    response_model=ElevenLabsUsageResponse,
+    response_model_exclude_none=True,
+)
+async def elevenlabs_usage(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ElevenLabsUsageResponse:
+    """Safe usage summary; never returns keys, headers or raw provider payloads.
+
+    Exact remaining characters are only reported when the provider returns both the
+    usage and the limit; remaining time is never estimated from character counts.
+    """
+    usage = fetch_usage(settings)
+    return ElevenLabsUsageResponse(
+        available=usage.available,
+        tier=usage.tier,
+        status=usage.status,
+        usage=usage.usage,
+        limit=usage.limit,
+        remaining=usage.remaining,
+        reset_at=usage.reset_at,
+        reason=usage.reason,
     )

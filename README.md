@@ -255,6 +255,19 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   (`requested_transcription_provider` vs `transcription_provider`/`transcription_model`).
 - Failed meetings can be retried explicitly with the local provider from the meeting
   detail page; there is no automatic fallback.
+- **Usage/quota:** `GET /api/v1/transcription/providers/elevenlabs/usage` returns only
+  provider-returned fields (tier, status, characters used/limit, exact remaining when both
+  are present, reset time). It never estimates time from characters and never returns keys,
+  headers or raw payloads. When the key scope cannot read billing
+  (`reason: "usage_scope_unavailable"`) the UI points to
+  Developers → Analytics → Usage in the ElevenLabs panel.
+- **Diarization threshold experiments** live in `benchmarks/elevenlabs-stt/`
+  (`run_threshold_sweep.py`, `analyze_thresholds.py`); they are benchmark-only, one request
+  per threshold, no retries, private outputs git-ignored, and the production
+  `ELEVENLABS_DIARIZATION_THRESHOLD` default stays `null`.
+- **Comparison meetings:** `scripts/create_comparison_meeting.py` builds a UI-visible
+  meeting that reuses an existing recording's audio read-only (no copy, no re-upload) with
+  provider/model metadata, so cloud results can be listened to side-by-side in the normal UI.
 - Real cloud verification is opt-in only:
   `RUN_ELEVENLABS_INTEGRATION=1 docker compose run --rm -e ELEVENLABS_API_KEY ... pytest -m integration`.
 

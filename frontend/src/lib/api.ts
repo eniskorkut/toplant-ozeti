@@ -214,6 +214,21 @@ export function getTranscriptionProviders(): Promise<ProviderCapabilities> {
   return request<ProviderCapabilities>("/api/v1/transcription/providers");
 }
 
+export type ElevenLabsUsage = {
+  available: boolean;
+  tier?: string;
+  status?: string;
+  usage?: number;
+  limit?: number;
+  remaining?: number;
+  reset_at?: string;
+  reason?: string;
+};
+
+export function getElevenLabsUsage(): Promise<ElevenLabsUsage> {
+  return request<ElevenLabsUsage>("/api/v1/transcription/providers/elevenlabs/usage");
+}
+
 export function getAnalysis(meetingId: string): Promise<MeetingAnalysis> {
   return request<MeetingAnalysis>(`/api/v1/meetings/${meetingId}/analysis`);
 }

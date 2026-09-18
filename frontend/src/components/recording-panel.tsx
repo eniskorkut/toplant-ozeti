@@ -5,10 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  getElevenLabsUsage,
   getMeeting,
   getTranscriptionProviders,
   processMeeting,
   uploadRecording,
+  type ElevenLabsUsage,
   type ProviderCapabilities,
   type TranscriptionProviderId,
 } from "@/lib/api";
@@ -58,6 +60,15 @@ function formatBitrate(bitsPerSecond: number | null): string {
   return `${(bitsPerSecond / 1000).toFixed(0)} kbps`;
 }
 
+function UsageItem({ label, value }: { label: string; value: string }) {
+  return (
+    <span>
+      <dt className="inline text-zinc-500 dark:text-zinc-400">{label}: </dt>
+      <dd className="inline font-mono tabular-nums">{value}</dd>
+    </span>
+  );
+}
+
 function MetadataRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4 py-1.5">
@@ -84,6 +95,8 @@ export function RecordingPanel() {
   const [providers, setProviders] = useState<ProviderCapabilities | null>(null);
   const [providerChoice, setProviderChoice] = useState<TranscriptionProviderId>("local");
   const [cloudAcknowledged, setCloudAcknowledged] = useState(false);
+  const [usage, setUsage] = useState<ElevenLabsUsage | null>(null);
+  const [usageError, setUsageError] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +134,23 @@ export function RecordingPanel() {
       cancelled = true;
     };
   }, []);
+
+  // Usage is fetched lazily when the cloud provider is selected; a failure never
+  // blocks provider selection or transcription.
+  useEffect(() => {
+    if (providerChoice !== "elevenlabs" || usage || usageError) return;
+    let cancelled = false;
+    getElevenLabsUsage()
+      .then((result) => {
+        if (!cancelled) setUsage(result);
+      })
+      .catch(() => {
+        if (!cancelled) setUsageError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerChoice, usage, usageError]);
 
   useEffect(() => {
     if (status !== "recording") return;
@@ -450,6 +480,33 @@ export function RecordingPanel() {
                   Konuşmacı sayısı ElevenLabs için beklenen azami sayıdır; sonuçta daha az
                   konuşmacı tespit edilebilir.
                 </p>
+                <div className="rounded-lg bg-zinc-500/10 px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
+                  {usage?.available ? (
+                    <dl className="flex flex-wrap gap-x-4 gap-y-1">
+                      {usage.tier ? <UsageItem label="Plan" value={usage.tier} /> : null}
+                      {usage.usage != null ? (
+                        <UsageItem label="Kullanım" value={String(usage.usage)} />
+                      ) : null}
+                      {usage.limit != null ? (
+                        <UsageItem label="Limit" value={String(usage.limit)} />
+                      ) : null}
+                      {usage.remaining != null ? (
+                        <UsageItem label="Kalan" value={String(usage.remaining)} />
+                      ) : null}
+                      {usage.reset_at ? (
+                        <UsageItem
+                          label="Yenilenme"
+                          value={new Date(usage.reset_at).toLocaleDateString("tr-TR")}
+                        />
+                      ) : null}
+                    </dl>
+                  ) : (
+                    <p>
+                      Kullanım bilgisi ElevenLabs panelindeki Developers → Analytics → Usage
+                      bölümünden görülebilir.
+                    </p>
+                  )}
+                </div>
               </>
             ) : null}
             <dl className="divide-y divide-zinc-950/5 border-t border-zinc-950/5 dark:divide-white/5 dark:border-white/10">
