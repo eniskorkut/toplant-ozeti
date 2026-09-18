@@ -202,6 +202,24 @@ docker compose logs -f worker
 docker compose exec backend uv run --locked pytest -m integration -q   # real-model E2E
 ```
 
+### Pre-commit safety gate (mandatory)
+
+Run this before every commit:
+
+```bash
+git status --short
+git diff --cached --name-only
+python scripts/check_sensitive_files.py
+```
+
+`scripts/check_sensitive_files.py` inspects tracked and staged files and fails non-zero
+for secrets (`.env*` except examples), audio containers, runtime databases, model
+binaries, benchmark `results/`/`private/`/`raw/` artifacts and likely credential values
+(`ELEVENLABS_API_KEY=<value>`, `Authorization: Bearer <value>`, `xi-api-key: <value>`).
+It only prints a path and a reason, never a detected value, and it allows source/tests
+that merely mention header or variable names. Its unit tests live in
+`scripts/tests/test_check_sensitive_files.py`.
+
 ### Transcription providers (local default, ElevenLabs opt-in)
 
 ```bash
@@ -229,6 +247,14 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
 - The provider and model are stored on the meeting (`transcription_provider`,
   `transcription_model`) and exposed on `GET /api/v1/meetings/{id}`; keys, headers and raw
   provider responses are never persisted or exposed.
+- The provider can be chosen **per meeting** through `POST /api/v1/meetings/{id}/process`
+  (`transcription_provider: null | "local" | "elevenlabs"`); `null` keeps the server
+  default. `GET /api/v1/transcription/providers` reports safe capability metadata
+  (id/label/cloud/availability) and never exposes keys. The requested provider is stored
+  separately from the provider that actually produced the transcript
+  (`requested_transcription_provider` vs `transcription_provider`/`transcription_model`).
+- Failed meetings can be retried explicitly with the local provider from the meeting
+  detail page; there is no automatic fallback.
 - Real cloud verification is opt-in only:
   `RUN_ELEVENLABS_INTEGRATION=1 docker compose run --rm -e ELEVENLABS_API_KEY ... pytest -m integration`.
 

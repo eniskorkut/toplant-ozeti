@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Path as PathParam
@@ -43,6 +43,10 @@ class ProcessRequest(BaseModel):
         le=MAX_SPEAKER_COUNT,
         description="Optional known speaker count; null selects automatic clustering.",
     )
+    transcription_provider: Literal["local", "elevenlabs"] | None = Field(
+        default=None,
+        description="Per-meeting provider override; null uses the configured default.",
+    )
 
 
 class MeetingStatus(BaseModel):
@@ -66,6 +70,8 @@ class MeetingSummary(BaseModel):
     requested_speaker_count: int | None
     has_transcript: bool
     analysis_status: str | None
+    transcription_provider: str | None = None
+    transcription_model: str | None = None
 
 
 class MeetingList(BaseModel):
@@ -167,6 +173,7 @@ async def queue_processing(
     request: ProcessRequest,
     meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> MeetingStatus:
     """Queue a meeting for processing. Idempotent: no duplicate work is created."""
     meeting = await _get_meeting(session, meeting_id)
@@ -179,8 +186,16 @@ async def queue_processing(
         # Already done or already in flight: report the current state unchanged.
         return _meeting_status(meeting, await _turn_count(session, meeting_id) > 0)
 
+    if request.transcription_provider == "elevenlabs" and not settings.elevenlabs_configured:
+        # Fail before queueing: no silent fallback, no half-configured cloud job.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ElevenLabs transcription is not configured.",
+        )
+
     meeting.status = MEETING_STATUS_QUEUED
     meeting.requested_speaker_count = request.speaker_count
+    meeting.requested_transcription_provider = request.transcription_provider
     meeting.processing_error = None
     await session.commit()
     await session.refresh(meeting)
@@ -217,6 +232,8 @@ async def list_meetings(
             requested_speaker_count=meeting.requested_speaker_count,
             has_transcript=bool(turns),
             analysis_status=analysis_status,
+            transcription_provider=meeting.transcription_provider,
+            transcription_model=meeting.transcription_model,
         )
         for meeting, turns, analysis_status in rows
     ]

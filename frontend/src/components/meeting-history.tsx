@@ -6,6 +6,11 @@ import { useEffect, useState } from "react";
 import { ApiError, listMeetings, type MeetingSummary } from "@/lib/api";
 import { formatDateTime, formatDuration, statusLabel } from "@/lib/format";
 
+const PROVIDER_LABELS: Record<string, string> = {
+  local: "Yerel",
+  elevenlabs: "ElevenLabs",
+};
+
 export function MeetingHistory() {
   const [meetings, setMeetings] = useState<MeetingSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +85,9 @@ export function MeetingHistory() {
                     : ""}
                   {meeting.requested_speaker_count
                     ? ` · ${meeting.requested_speaker_count} konuşmacı`
+                    : ""}
+                  {meeting.transcription_provider
+                    ? ` · ${PROVIDER_LABELS[meeting.transcription_provider] ?? meeting.transcription_provider}`
                     : ""}
                 </span>
               </span>

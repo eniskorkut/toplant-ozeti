@@ -81,6 +81,20 @@ export async function uploadRecording(
 
 export type MeetingStatusValue = "uploaded" | "queued" | "processing" | "completed" | "failed";
 
+export type TranscriptionProviderId = "local" | "elevenlabs";
+
+export type ProviderCapability = {
+  id: TranscriptionProviderId;
+  available: boolean;
+  cloud: boolean;
+  label: string;
+};
+
+export type ProviderCapabilities = {
+  default: TranscriptionProviderId;
+  providers: ProviderCapability[];
+};
+
 export type MeetingStatus = {
   meeting_id: string;
   status: MeetingStatusValue;
@@ -89,6 +103,8 @@ export type MeetingStatus = {
   requested_speaker_count: number | null;
   processing_error: string | null;
   has_transcript: boolean;
+  transcription_provider: string | null;
+  transcription_model: string | null;
 };
 
 export type TranscriptTurn = {
@@ -156,6 +172,8 @@ export type MeetingSummary = {
   requested_speaker_count: number | null;
   has_transcript: boolean;
   analysis_status: AnalysisStatusValue | null;
+  transcription_provider: string | null;
+  transcription_model: string | null;
 };
 
 export type MeetingList = { meetings: MeetingSummary[]; count: number };
@@ -172,15 +190,28 @@ export function getTranscript(meetingId: string): Promise<Transcript> {
   return request<Transcript>(`/api/v1/meetings/${meetingId}/transcript`);
 }
 
+export type ProcessMeetingOptions = {
+  speakerCount: number | null;
+  /** null uses the configured server default provider. */
+  transcriptionProvider: TranscriptionProviderId | null;
+};
+
 export function processMeeting(
   meetingId: string,
-  speakerCount: number | null,
+  options: ProcessMeetingOptions,
 ): Promise<MeetingStatus> {
   return request<MeetingStatus>(`/api/v1/meetings/${meetingId}/process`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ speaker_count: speakerCount }),
+    body: JSON.stringify({
+      speaker_count: options.speakerCount,
+      transcription_provider: options.transcriptionProvider,
+    }),
   });
+}
+
+export function getTranscriptionProviders(): Promise<ProviderCapabilities> {
+  return request<ProviderCapabilities>("/api/v1/transcription/providers");
 }
 
 export function getAnalysis(meetingId: string): Promise<MeetingAnalysis> {

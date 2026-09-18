@@ -27,6 +27,7 @@ SQLITE_ADDITIVE_MIGRATIONS: dict[str, dict[str, str]] = {
     "meetings": {
         "transcription_provider": "VARCHAR(32)",
         "transcription_model": "VARCHAR(64)",
+        "requested_transcription_provider": "VARCHAR(32)",
     },
 }
 

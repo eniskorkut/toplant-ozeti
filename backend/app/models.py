@@ -58,6 +58,10 @@ class Meeting(Base):
     # How the transcript was produced (safe metadata only; never keys or raw responses).
     transcription_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     transcription_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # What the client asked for; null means "use the configured server default".
+    requested_transcription_provider: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
 
     turns: Mapped[list[TranscriptTurn]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan", order_by="TranscriptTurn.ordinal"

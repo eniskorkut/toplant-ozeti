@@ -4,6 +4,7 @@ import {
   ApiError,
   getMeeting,
   getTranscript,
+  getTranscriptionProviders,
   listMeetings,
   processMeeting,
   uploadRecording,
@@ -83,25 +84,52 @@ describe("api client", () => {
     });
   });
 
-  it("posts the speaker count when queueing processing", async () => {
+  it("posts the local provider and speaker count when queueing processing", async () => {
     stubFetch();
     fetchMock.mockResolvedValue(jsonResponse({ meeting_id: "m1", status: "queued" }));
 
-    await processMeeting("m1", 3);
+    await processMeeting("m1", { speakerCount: 3, transcriptionProvider: "local" });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://localhost:8000/api/v1/meetings/m1/process");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ speaker_count: 3 });
+    expect(JSON.parse(init.body)).toEqual({
+      speaker_count: 3,
+      transcription_provider: "local",
+    });
   });
 
-  it("sends null for automatic speaker count", async () => {
+  it("posts the elevenlabs provider", async () => {
     stubFetch();
     fetchMock.mockResolvedValue(jsonResponse({ meeting_id: "m1", status: "queued" }));
 
-    await processMeeting("m1", null);
+    await processMeeting("m1", { speakerCount: null, transcriptionProvider: "elevenlabs" });
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ speaker_count: null });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      speaker_count: null,
+      transcription_provider: "elevenlabs",
+    });
+  });
+
+  it("fetches provider capabilities", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        default: "local",
+        providers: [
+          { id: "local", available: true, cloud: false, label: "Yerel" },
+          { id: "elevenlabs", available: false, cloud: true, label: "ElevenLabs" },
+        ],
+      }),
+    );
+
+    const capabilities = await getTranscriptionProviders();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://localhost:8000/api/v1/transcription/providers",
+    );
+    expect(capabilities.default).toBe("local");
+    expect(capabilities.providers[1].available).toBe(false);
   });
 
   it("lists meetings through the versioned endpoint", async () => {

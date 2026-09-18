@@ -11,6 +11,7 @@ const dispose = vi.fn();
 const uploadRecording = vi.fn();
 const processMeeting = vi.fn();
 const getMeeting = vi.fn();
+const getTranscriptionProviders = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -19,6 +20,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     uploadRecording: (...args: unknown[]) => uploadRecording(...args),
     processMeeting: (...args: unknown[]) => processMeeting(...args),
     getMeeting: (...args: unknown[]) => getMeeting(...args),
+    getTranscriptionProviders: (...args: unknown[]) => getTranscriptionProviders(...args),
   };
 });
 
@@ -38,7 +40,18 @@ vi.mock("@/lib/audio-recorder", () => ({
     error instanceof Error ? error.message : "mikrofon hatası",
 }));
 
+function capabilities(elevenlabsAvailable: boolean) {
+  return {
+    default: "local",
+    providers: [
+      { id: "local", available: true, cloud: false, label: "Yerel" },
+      { id: "elevenlabs", available: elevenlabsAvailable, cloud: true, label: "ElevenLabs" },
+    ],
+  };
+}
+
 beforeEach(() => {
+  getTranscriptionProviders.mockResolvedValue(capabilities(false));
   start.mockResolvedValue({
     requestedMimeType: "audio/webm;codecs=opus",
     requestedBitsPerSecond: 64000,
@@ -137,7 +150,10 @@ describe("RecordingPanel", () => {
       fireEvent.change(screen.getByLabelText("Konuşmacı sayısı"), { target: { value: "2" } });
       fireEvent.click(screen.getByRole("button", { name: "Transkripsiyonu Başlat" }));
     });
-    expect(processMeeting).toHaveBeenCalledWith("m-new", 2);
+    expect(processMeeting).toHaveBeenCalledWith("m-new", {
+      speakerCount: 2,
+      transcriptionProvider: "local",
+    });
     expect(screen.getByText(/Ses yazıya dönüştürülüyor/)).toBeTruthy();
 
     // polling completes
@@ -164,7 +180,10 @@ describe("RecordingPanel", () => {
     await recordAndUpload();
     await queueProcessing();
 
-    expect(processMeeting).toHaveBeenCalledWith("m-new", null);
+    expect(processMeeting).toHaveBeenCalledWith("m-new", {
+      speakerCount: null,
+      transcriptionProvider: "local",
+    });
   });
 
   it("renders a backend processing failure", async () => {
@@ -261,7 +280,10 @@ describe("RecordingPanel", () => {
     await recordAndUpload();
     await queueProcessing("8");
 
-    expect(processMeeting).toHaveBeenCalledWith("m-new", 8);
+    expect(processMeeting).toHaveBeenCalledWith("m-new", {
+      speakerCount: 8,
+      transcriptionProvider: "local",
+    });
   });
 
   it("shows a microphone error without uploading", async () => {
@@ -274,5 +296,77 @@ describe("RecordingPanel", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Mikrofon izni verilmedi");
     expect(uploadRecording).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("RecordingPanel provider selection", () => {
+  it("defaults to Yerel and fetches capabilities from the backend", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+
+    expect(getTranscriptionProviders).toHaveBeenCalled();
+    const local = screen.getByRole("radio", { name: /Yerel/ });
+    expect(local).toBeChecked();
+    expect(screen.getByText("Ses kaydı yerel işlem hattında işlenir.")).toBeTruthy();
+  });
+
+  it("disables ElevenLabs and shows the safe message when unavailable", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+
+    const elevenlabs = screen.getByRole("radio", { name: /ElevenLabs/ });
+    expect(elevenlabs).toBeDisabled();
+    expect(screen.getByText("ElevenLabs API yapılandırılmamış.")).toBeTruthy();
+  });
+
+  it("requires cloud acknowledgment before queueing ElevenLabs", async () => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
+    });
+    const startButton = screen.getByRole("button", { name: "Transkripsiyonu Başlat" });
+    expect(startButton).toBeDisabled();
+    expect(
+      screen.getByText(/Ses kaydının transkripsiyon amacıyla ElevenLabs'a gönderileceğini/),
+    ).toBeTruthy();
+    expect(screen.getByText(/beklenen azami sayıdır/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("checkbox"));
+    });
+    expect(startButton).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(startButton);
+    });
+    expect(processMeeting).toHaveBeenCalledWith("m-new", {
+      speakerCount: null,
+      transcriptionProvider: "elevenlabs",
+    });
+  });
+
+  it("does not require consent for the local provider", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+
+    const startButton = screen.getByRole("button", { name: "Transkripsiyonu Başlat" });
+    expect(startButton).not.toBeDisabled();
+    expect(screen.queryByRole("checkbox")).toBeNull();
   });
 });

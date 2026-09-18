@@ -24,6 +24,8 @@ const MEETINGS: MeetingSummary[] = [
     requested_speaker_count: null,
     has_transcript: true,
     analysis_status: "completed",
+    transcription_provider: "elevenlabs",
+    transcription_model: "scribe_v2",
   },
   {
     meeting_id: "older",
@@ -33,6 +35,8 @@ const MEETINGS: MeetingSummary[] = [
     requested_speaker_count: 2,
     has_transcript: false,
     analysis_status: null,
+    transcription_provider: null,
+    transcription_model: null,
   },
 ];
 
@@ -63,6 +67,14 @@ describe("MeetingHistory", () => {
     expect(screen.getByText(/Tamamlandı · Analiz: Tamamlandı/)).toBeTruthy();
     expect(screen.getByText(/Başarısız/)).toBeTruthy();
     expect(screen.getByText(/2 konuşmacı/)).toBeTruthy();
+  });
+
+  it("shows the provider badge and tolerates legacy null metadata", async () => {
+    render(<MeetingHistory />);
+
+    await screen.findAllByRole("listitem");
+    expect(screen.getByText(/ElevenLabs/)).toBeTruthy();
+    expect(screen.getAllByRole("listitem")[1].textContent).not.toContain("ElevenLabs");
   });
 
   it("shows a clear empty state", async () => {

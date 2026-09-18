@@ -8,6 +8,7 @@ import {
   getMeeting,
   getTranscript,
   meetingAudioUrl,
+  processMeeting,
   startAnalysis,
   type MeetingAnalysis,
   type MeetingStatus,
@@ -16,6 +17,11 @@ import {
 import { formatDuration, formatTimestamp, statusLabel } from "@/lib/format";
 
 const POLL_INTERVAL_MS = 2000;
+const PROVIDER_BADGES: Record<string, string> = {
+  local: "Yerel · whisper.cpp",
+  elevenlabs: "ElevenLabs · Scribe v2",
+};
+
 const ANALYSIS_UNAVAILABLE_MESSAGE =
   "Toplantı analizi için uygun bir LLM sağlayıcısı yapılandırılmamış.";
 
@@ -61,6 +67,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
 
   const seekTo = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -155,6 +162,23 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
     };
   }, [analysis, meetingId]);
 
+  const handleRetryWithLocal = useCallback(async () => {
+    setRetrying(true);
+    try {
+      // Explicit choice: retry locally. The backend re-queues failed meetings and
+      // there is no automatic provider fallback.
+      const updated = await processMeeting(meetingId, {
+        speakerCount: meeting?.requested_speaker_count ?? null,
+        transcriptionProvider: "local",
+      });
+      setMeeting(updated);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Yeniden deneme başarısız.");
+    } finally {
+      setRetrying(false);
+    }
+  }, [meeting, meetingId]);
+
   const handleAnalyze = useCallback(async () => {
     setAnalysisBusy(true);
     setAnalysisError(null);
@@ -187,6 +211,10 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   }
 
   const isProcessing = meeting.status === "queued" || meeting.status === "processing";
+  // Legacy meetings may have no provider metadata; render normally without a badge.
+  const providerBadge = meeting.transcription_provider
+    ? (PROVIDER_BADGES[meeting.transcription_provider] ?? meeting.transcription_provider)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -196,6 +224,11 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             Toplantı {meeting.meeting_id}
           </h1>
           <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            {providerBadge ? (
+              <span className="mr-2 rounded-full bg-zinc-500/10 px-2 py-0.5 text-zinc-700 dark:text-zinc-300">
+                {providerBadge}
+              </span>
+            ) : null}
             Durum: {statusLabel(meeting.status)}
             {meeting.duration_seconds != null
               ? ` · ${formatDuration(meeting.duration_seconds)}`
@@ -210,9 +243,25 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
         ) : null}
 
         {meeting.status === "failed" ? (
-          <p role="alert" className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400">
-            İşleme hatası: {meeting.processing_error ?? "bilinmeyen hata"}
-          </p>
+          <div className="mt-2 space-y-2">
+            <p
+              role="alert"
+              className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+            >
+              İşleme hatası: {meeting.processing_error ?? "bilinmeyen hata"}
+            </p>
+            <button
+              type="button"
+              onClick={handleRetryWithLocal}
+              disabled={retrying}
+              className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              {retrying ? "Kuyruğa alınıyor…" : "Yerel ile yeniden dene"}
+            </button>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Yeniden deneme, kaydı yerel işlem hattında işler.
+            </p>
+          </div>
         ) : null}
 
         {meeting.status === "completed" ? (

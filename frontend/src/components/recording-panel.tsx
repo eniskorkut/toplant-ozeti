@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, getMeeting, processMeeting, uploadRecording } from "@/lib/api";
+import {
+  ApiError,
+  getMeeting,
+  getTranscriptionProviders,
+  processMeeting,
+  uploadRecording,
+  type ProviderCapabilities,
+  type TranscriptionProviderId,
+} from "@/lib/api";
 import {
   MeetingRecorder,
   describeMicrophoneError,
@@ -73,6 +81,9 @@ export function RecordingPanel() {
   const [uploadedBytes, setUploadedBytes] = useState<number | null>(null);
   const [uploadedDuration, setUploadedDuration] = useState<number | null>(null);
   const [speakerChoice, setSpeakerChoice] = useState<(typeof SPEAKER_OPTIONS)[number]>("auto");
+  const [providers, setProviders] = useState<ProviderCapabilities | null>(null);
+  const [providerChoice, setProviderChoice] = useState<TranscriptionProviderId>("local");
+  const [cloudAcknowledged, setCloudAcknowledged] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +103,22 @@ export function RecordingPanel() {
       if (previewUrlRef.current) {
         URL.revokeObjectURL(previewUrlRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getTranscriptionProviders()
+      .then((capabilities) => {
+        if (cancelled) return;
+        setProviders(capabilities);
+        setProviderChoice(capabilities.default);
+      })
+      .catch(() => {
+        // Keep the local default when capabilities cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -209,7 +236,10 @@ export function RecordingPanel() {
     setError(null);
     setProcessingError(null);
     try {
-      await processMeeting(meetingId, speakerChoice === "auto" ? null : Number(speakerChoice));
+      await processMeeting(meetingId, {
+        speakerCount: speakerChoice === "auto" ? null : Number(speakerChoice),
+        transcriptionProvider: providerChoice,
+      });
       setStatus("processing");
     } catch (processError) {
       setError(
@@ -219,9 +249,19 @@ export function RecordingPanel() {
       );
       setStatus("uploaded");
     }
-  }, [meetingId, speakerChoice]);
+  }, [meetingId, speakerChoice, providerChoice]);
 
   const busy = status === "requesting" || status === "uploading" || status === "processing";
+  const providerOptions =
+    providers?.providers ?? [
+      { id: "local" as const, available: true, cloud: false, label: "Yerel" },
+      {
+        id: "elevenlabs" as const,
+        available: false,
+        cloud: true,
+        label: "ElevenLabs",
+      },
+    ];
 
   return (
     <section aria-labelledby="recording" className="enter enter-2">
@@ -336,7 +376,8 @@ export function RecordingPanel() {
               <button
                 type="button"
                 onClick={handleProcess}
-                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] dark:bg-zinc-100 dark:text-zinc-900"
+                disabled={providerChoice === "elevenlabs" && !cloudAcknowledged}
+                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
               >
                 Transkripsiyonu Başlat
               </button>
@@ -345,6 +386,72 @@ export function RecordingPanel() {
               Konuşmacı sayısı yalnızca kümeleme içindir; kişiler anonim olarak
               etiketlenir (Kişi 1, Kişi 2, …).
             </p>
+
+            <fieldset className="space-y-2">
+              <legend className="text-xs text-zinc-500 dark:text-zinc-400">
+                Transkripsiyon yöntemi
+              </legend>
+              {providerOptions.map((option) => {
+                const unavailable = !option.available;
+                const selected = providerChoice === option.id;
+                return (
+                  <label
+                    key={option.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${
+                      selected
+                        ? "border-zinc-900 dark:border-zinc-100"
+                        : "border-zinc-950/10 dark:border-white/15"
+                    } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="transcription-provider"
+                      value={option.id}
+                      checked={selected}
+                      disabled={unavailable}
+                      onChange={() => setProviderChoice(option.id)}
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm text-zinc-900 dark:text-zinc-100">
+                        {option.id === "local" ? "Yerel" : option.label}
+                      </span>
+                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                        {option.id === "local"
+                          ? "Ses kaydı yerel işlem hattında işlenir."
+                          : "Ses kaydı transkripsiyon için ElevenLabs hizmetine gönderilir."}
+                      </span>
+                      {unavailable ? (
+                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                          ElevenLabs API yapılandırılmamış.
+                        </span>
+                      ) : null}
+                    </span>
+                  </label>
+                );
+              })}
+            </fieldset>
+
+            {providerChoice === "elevenlabs" ? (
+              <>
+                <label className="flex items-start gap-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                  <input
+                    type="checkbox"
+                    checked={cloudAcknowledged}
+                    onChange={(event) => setCloudAcknowledged(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Ses kaydının transkripsiyon amacıyla ElevenLabs&apos;a gönderileceğini
+                    anlıyorum.
+                  </span>
+                </label>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Konuşmacı sayısı ElevenLabs için beklenen azami sayıdır; sonuçta daha az
+                  konuşmacı tespit edilebilir.
+                </p>
+              </>
+            ) : null}
             <dl className="divide-y divide-zinc-950/5 border-t border-zinc-950/5 dark:divide-white/5 dark:border-white/10">
               {uploadedDuration != null ? (
                 <MetadataRow label="Kayıt süresi" value={formatDuration(uploadedDuration)} />

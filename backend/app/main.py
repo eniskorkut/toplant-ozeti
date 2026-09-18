@@ -9,6 +9,7 @@ from app.db import get_database
 from app.logging_config import configure_logging
 from app.routers.meetings import router as meetings_router
 from app.routers.recordings import router as recordings_router
+from app.routers.transcription import router as transcription_router
 
 
 class HealthResponse(BaseModel):
@@ -41,6 +42,7 @@ app.add_middleware(
 
 app.include_router(recordings_router)
 app.include_router(meetings_router)
+app.include_router(transcription_router)
 
 
 @app.get("/health", response_model=HealthResponse)

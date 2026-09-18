@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
@@ -9,6 +9,7 @@ const getMeeting = vi.fn();
 const getTranscript = vi.fn();
 const getAnalysis = vi.fn();
 const startAnalysis = vi.fn();
+const processMeeting = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -18,6 +19,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getTranscript: (...args: unknown[]) => getTranscript(...args),
     getAnalysis: (...args: unknown[]) => getAnalysis(...args),
     startAnalysis: (...args: unknown[]) => startAnalysis(...args),
+    processMeeting: (...args: unknown[]) => processMeeting(...args),
     meetingAudioUrl: (id: string) => `http://localhost:8000/api/v1/meetings/${id}/audio`,
   };
 });
@@ -30,6 +32,8 @@ const COMPLETED_MEETING: MeetingStatus = {
   requested_speaker_count: null,
   processing_error: null,
   has_transcript: true,
+  transcription_provider: null,
+  transcription_model: null,
 };
 
 const TRANSCRIPT: Transcript = {
@@ -172,6 +176,52 @@ describe("MeetingDetail", () => {
     render(<MeetingDetail meetingId="m1" />);
 
     expect(await screen.findByText(/whisper\.cpp model not found/)).toBeTruthy();
+  });
+
+  it("renders the provider badge for completed meetings", async () => {
+    getMeeting.mockResolvedValue({
+      ...COMPLETED_MEETING,
+      transcription_provider: "elevenlabs",
+      transcription_model: "scribe_v2",
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("ElevenLabs · Scribe v2")).toBeTruthy();
+  });
+
+  it("renders legacy meetings without provider metadata", async () => {
+    getMeeting.mockResolvedValue({ ...COMPLETED_MEETING, transcription_provider: null });
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("Merhaba")).toBeTruthy();
+    expect(screen.queryByText(/Yerel · whisper.cpp|ElevenLabs · Scribe v2/)).toBeNull();
+  });
+
+  it("offers an explicit local retry for failed meetings", async () => {
+    getMeeting.mockResolvedValue({
+      ...COMPLETED_MEETING,
+      status: "failed",
+      processing_error: "ElevenLabs rejected the request (HTTP 401)",
+      has_transcript: false,
+    });
+    processMeeting.mockResolvedValue({
+      ...COMPLETED_MEETING,
+      status: "queued",
+      processing_error: null,
+      has_transcript: false,
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Yerel ile yeniden dene" }));
+
+    await waitFor(() =>
+      expect(processMeeting).toHaveBeenCalledWith("m1", {
+        speakerCount: null,
+        transcriptionProvider: "local",
+      }),
+    );
   });
 
   it("polls while processing and stops once completed", async () => {

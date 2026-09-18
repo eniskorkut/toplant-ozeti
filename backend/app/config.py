@@ -121,6 +121,11 @@ class Settings(BaseSettings):
         return value
 
     @property
+    def elevenlabs_configured(self) -> bool:
+        """True when the ElevenLabs provider has everything it needs."""
+        return bool(self.elevenlabs_api_key and self.elevenlabs_api_key.get_secret_value().strip())
+
+    @property
     def llm_configured(self) -> bool:
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 

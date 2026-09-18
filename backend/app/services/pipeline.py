@@ -80,6 +80,7 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
     meeting_id = meeting.id
     processing_wav_path = meeting.processing_wav_path
     requested_speaker_count = meeting.requested_speaker_count
+    requested_provider = meeting.requested_transcription_provider
 
     try:
         audio_path = settings.meetings_dir / processing_wav_path
@@ -87,7 +88,7 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
             raise FileNotFoundError(f"processing audio missing: {audio_path}")
 
         output = await asyncio.to_thread(
-            _run_inference, audio_path, requested_speaker_count, settings
+            _run_inference, audio_path, requested_speaker_count, settings, requested_provider
         )
 
         await session.execute(delete(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id))
@@ -128,7 +129,10 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
 
 
 def _run_inference(
-    audio_path, requested_speaker_count: int | None, settings: Settings
+    audio_path,
+    requested_speaker_count: int | None,
+    settings: Settings,
+    requested_provider: str | None = None,
 ) -> dict:
     """Blocking inference step (runs in a worker thread).
 
@@ -140,11 +144,17 @@ def _run_inference(
     with wave.open(str(audio_path), "rb") as wav_file:
         duration_seconds = wav_file.getnframes() / wav_file.getframerate()
 
-    provider = build_provider(settings)
+    effective_settings = settings
+    if requested_provider and requested_provider != settings.transcription_provider:
+        # Per-meeting override; null keeps the configured server default.
+        effective_settings = settings.model_copy(
+            update={"transcription_provider": requested_provider}
+        )
+    provider = build_provider(effective_settings)
     result = provider.transcribe(
         audio_path,
         requested_speaker_count=requested_speaker_count,
-        settings=settings,
+        settings=effective_settings,
     )
     turns = form_turns(result.words)
 
