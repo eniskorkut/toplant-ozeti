@@ -68,3 +68,6 @@ benchmarks/merge/results/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+
+# Real-meeting diagnostic outputs (contain transcript text)
+benchmarks/real-meeting-diagnostic/output/

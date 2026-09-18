@@ -1,0 +1,425 @@
+{
+  "generated_at": "2026-09-18T12:45:16+00:00",
+  "meeting_id": "b1095740120b4b1e96db337da961ea63",
+  "audio": {
+    "path": "/data/meetings/b1095740120b4b1e96db337da961ea63/processing.wav",
+    "real_speakers": 4
+  },
+  "production_overrides": "language and speaker count only; all other settings at production defaults",
+  "configs": {
+    "A": {
+      "label": "A",
+      "language_requested": "auto",
+      "language_detected": "tr",
+      "speaker_count_requested": null,
+      "stt": {
+        "transcript_chars": 750,
+        "normalized_word_count": 111,
+        "inference_seconds": 20.252,
+        "rtf": 0.4727,
+        "words": 106,
+        "zero_duration_words": 6,
+        "monotonicity_violations": 0,
+        "negative_timestamps": 0
+      },
+      "diarization": {
+        "non_empty_clusters": 4,
+        "segment_count": 13,
+        "per_cluster_seconds": {
+          "0": 25.38,
+          "1": 5.47,
+          "2": 16.39,
+          "3": 2.72
+        },
+        "per_cluster_segments": {
+          "0": 9,
+          "1": 2,
+          "2": 1,
+          "3": 1
+        },
+        "reported_num_speakers": 4,
+        "inference_seconds": 2.609,
+        "model_load_seconds": 0.524,
+        "rtf": 0.0609
+      },
+      "coverage": {
+        "coverage_seconds": 37.868,
+        "coverage_ratio": 0.8839,
+        "longest_gap_seconds": 1.837
+      },
+      "unresolved_word_gaps": {
+        "count": 21,
+        "median_gap_seconds": 0.0,
+        "max_gap_seconds": 1.357,
+        "buckets": {
+          "overlapping_or_within_tolerance": 16,
+          "tolerance_to_1s": 3,
+          "one_to_3s": 2,
+          "over_3s": 0
+        }
+      },
+      "unresolved_causes": {
+        "total": 21,
+        "overlap_region": 16,
+        "coverage_gap": 5,
+        "boundary_or_tie": 0,
+        "shares": {
+          "overlap_region": 0.762,
+          "coverage_gap": 0.238,
+          "boundary_or_tie": 0.0
+        }
+      },
+      "merge": {
+        "assigned_words": 85,
+        "unresolved_words": 21,
+        "kişi_labels": [
+          "Kişi 1",
+          "Kişi 2",
+          "Kişi 3",
+          "Kişi 4"
+        ],
+        "final_speaker_count": 4,
+        "turn_count": 13,
+        "unknown_turn_count": 5,
+        "unknown_seconds": 8.41,
+        "speaker_changes": 12,
+        "rapid_flips": 0,
+        "per_speaker_words": {
+          "Bilinmeyen": 21,
+          "Kişi 1": 40,
+          "Kişi 2": 7,
+          "Kişi 3": 34,
+          "Kişi 4": 4
+        },
+        "per_speaker_seconds": {
+          "Bilinmeyen": 8.41,
+          "Kişi 1": 17.05,
+          "Kişi 2": 3.7,
+          "Kişi 3": 12.11,
+          "Kişi 4": 1.45
+        },
+        "long_merged_exchange_turns": {
+          "count": 0,
+          "durations": []
+        },
+        "longest_turn_seconds": 11.05,
+        "shortest_non_empty_turn_seconds": 0.52,
+        "speaker_count_error": 0
+      }
+    },
+    "B": {
+      "label": "B",
+      "language_requested": "tr",
+      "language_detected": "tr",
+      "speaker_count_requested": null,
+      "stt": {
+        "transcript_chars": 750,
+        "normalized_word_count": 111,
+        "inference_seconds": 14.558,
+        "rtf": 0.3398,
+        "words": 106,
+        "zero_duration_words": 6,
+        "monotonicity_violations": 0,
+        "negative_timestamps": 0
+      },
+      "diarization": {
+        "non_empty_clusters": 4,
+        "segment_count": 13,
+        "per_cluster_seconds": {
+          "0": 25.38,
+          "1": 5.47,
+          "2": 16.39,
+          "3": 2.72
+        },
+        "per_cluster_segments": {
+          "0": 9,
+          "1": 2,
+          "2": 1,
+          "3": 1
+        },
+        "reported_num_speakers": 4,
+        "inference_seconds": 2.399,
+        "model_load_seconds": 0.489,
+        "rtf": 0.056
+      },
+      "coverage": {
+        "coverage_seconds": 37.868,
+        "coverage_ratio": 0.8839,
+        "longest_gap_seconds": 1.837
+      },
+      "unresolved_word_gaps": {
+        "count": 21,
+        "median_gap_seconds": 0.0,
+        "max_gap_seconds": 1.357,
+        "buckets": {
+          "overlapping_or_within_tolerance": 16,
+          "tolerance_to_1s": 3,
+          "one_to_3s": 2,
+          "over_3s": 0
+        }
+      },
+      "unresolved_causes": {
+        "total": 21,
+        "overlap_region": 16,
+        "coverage_gap": 5,
+        "boundary_or_tie": 0,
+        "shares": {
+          "overlap_region": 0.762,
+          "coverage_gap": 0.238,
+          "boundary_or_tie": 0.0
+        }
+      },
+      "merge": {
+        "assigned_words": 85,
+        "unresolved_words": 21,
+        "kişi_labels": [
+          "Kişi 1",
+          "Kişi 2",
+          "Kişi 3",
+          "Kişi 4"
+        ],
+        "final_speaker_count": 4,
+        "turn_count": 13,
+        "unknown_turn_count": 5,
+        "unknown_seconds": 8.41,
+        "speaker_changes": 12,
+        "rapid_flips": 0,
+        "per_speaker_words": {
+          "Bilinmeyen": 21,
+          "Kişi 1": 40,
+          "Kişi 2": 7,
+          "Kişi 3": 34,
+          "Kişi 4": 4
+        },
+        "per_speaker_seconds": {
+          "Bilinmeyen": 8.41,
+          "Kişi 1": 17.05,
+          "Kişi 2": 3.7,
+          "Kişi 3": 12.11,
+          "Kişi 4": 1.45
+        },
+        "long_merged_exchange_turns": {
+          "count": 0,
+          "durations": []
+        },
+        "longest_turn_seconds": 11.05,
+        "shortest_non_empty_turn_seconds": 0.52,
+        "speaker_count_error": 0
+      }
+    },
+    "C": {
+      "label": "C",
+      "language_requested": "auto",
+      "language_detected": "tr",
+      "speaker_count_requested": 4,
+      "stt": {
+        "transcript_chars": 750,
+        "normalized_word_count": 111,
+        "inference_seconds": 19.213,
+        "rtf": 0.4485,
+        "words": 106,
+        "zero_duration_words": 6,
+        "monotonicity_violations": 0,
+        "negative_timestamps": 0
+      },
+      "diarization": {
+        "non_empty_clusters": 4,
+        "segment_count": 13,
+        "per_cluster_seconds": {
+          "0": 25.38,
+          "1": 5.47,
+          "2": 16.39,
+          "3": 2.72
+        },
+        "per_cluster_segments": {
+          "0": 9,
+          "1": 2,
+          "2": 1,
+          "3": 1
+        },
+        "reported_num_speakers": 4,
+        "inference_seconds": 2.178,
+        "model_load_seconds": 0.493,
+        "rtf": 0.0508
+      },
+      "coverage": {
+        "coverage_seconds": 37.868,
+        "coverage_ratio": 0.8839,
+        "longest_gap_seconds": 1.837
+      },
+      "unresolved_word_gaps": {
+        "count": 21,
+        "median_gap_seconds": 0.0,
+        "max_gap_seconds": 1.357,
+        "buckets": {
+          "overlapping_or_within_tolerance": 16,
+          "tolerance_to_1s": 3,
+          "one_to_3s": 2,
+          "over_3s": 0
+        }
+      },
+      "unresolved_causes": {
+        "total": 21,
+        "overlap_region": 16,
+        "coverage_gap": 5,
+        "boundary_or_tie": 0,
+        "shares": {
+          "overlap_region": 0.762,
+          "coverage_gap": 0.238,
+          "boundary_or_tie": 0.0
+        }
+      },
+      "merge": {
+        "assigned_words": 85,
+        "unresolved_words": 21,
+        "kişi_labels": [
+          "Kişi 1",
+          "Kişi 2",
+          "Kişi 3",
+          "Kişi 4"
+        ],
+        "final_speaker_count": 4,
+        "turn_count": 13,
+        "unknown_turn_count": 5,
+        "unknown_seconds": 8.41,
+        "speaker_changes": 12,
+        "rapid_flips": 0,
+        "per_speaker_words": {
+          "Bilinmeyen": 21,
+          "Kişi 1": 40,
+          "Kişi 2": 7,
+          "Kişi 3": 34,
+          "Kişi 4": 4
+        },
+        "per_speaker_seconds": {
+          "Bilinmeyen": 8.41,
+          "Kişi 1": 17.05,
+          "Kişi 2": 3.7,
+          "Kişi 3": 12.11,
+          "Kişi 4": 1.45
+        },
+        "long_merged_exchange_turns": {
+          "count": 0,
+          "durations": []
+        },
+        "longest_turn_seconds": 11.05,
+        "shortest_non_empty_turn_seconds": 0.52,
+        "speaker_count_error": 0
+      }
+    },
+    "D": {
+      "label": "D",
+      "language_requested": "tr",
+      "language_detected": "tr",
+      "speaker_count_requested": 4,
+      "stt": {
+        "transcript_chars": 750,
+        "normalized_word_count": 111,
+        "inference_seconds": 13.581,
+        "rtf": 0.317,
+        "words": 106,
+        "zero_duration_words": 6,
+        "monotonicity_violations": 0,
+        "negative_timestamps": 0
+      },
+      "diarization": {
+        "non_empty_clusters": 4,
+        "segment_count": 13,
+        "per_cluster_seconds": {
+          "0": 25.38,
+          "1": 5.47,
+          "2": 16.39,
+          "3": 2.72
+        },
+        "per_cluster_segments": {
+          "0": 9,
+          "1": 2,
+          "2": 1,
+          "3": 1
+        },
+        "reported_num_speakers": 4,
+        "inference_seconds": 2.281,
+        "model_load_seconds": 0.484,
+        "rtf": 0.0532
+      },
+      "coverage": {
+        "coverage_seconds": 37.868,
+        "coverage_ratio": 0.8839,
+        "longest_gap_seconds": 1.837
+      },
+      "unresolved_word_gaps": {
+        "count": 21,
+        "median_gap_seconds": 0.0,
+        "max_gap_seconds": 1.357,
+        "buckets": {
+          "overlapping_or_within_tolerance": 16,
+          "tolerance_to_1s": 3,
+          "one_to_3s": 2,
+          "over_3s": 0
+        }
+      },
+      "unresolved_causes": {
+        "total": 21,
+        "overlap_region": 16,
+        "coverage_gap": 5,
+        "boundary_or_tie": 0,
+        "shares": {
+          "overlap_region": 0.762,
+          "coverage_gap": 0.238,
+          "boundary_or_tie": 0.0
+        }
+      },
+      "merge": {
+        "assigned_words": 85,
+        "unresolved_words": 21,
+        "kişi_labels": [
+          "Kişi 1",
+          "Kişi 2",
+          "Kişi 3",
+          "Kişi 4"
+        ],
+        "final_speaker_count": 4,
+        "turn_count": 13,
+        "unknown_turn_count": 5,
+        "unknown_seconds": 8.41,
+        "speaker_changes": 12,
+        "rapid_flips": 0,
+        "per_speaker_words": {
+          "Bilinmeyen": 21,
+          "Kişi 1": 40,
+          "Kişi 2": 7,
+          "Kişi 3": 34,
+          "Kişi 4": 4
+        },
+        "per_speaker_seconds": {
+          "Bilinmeyen": 8.41,
+          "Kişi 1": 17.05,
+          "Kişi 2": 3.7,
+          "Kişi 3": 12.11,
+          "Kişi 4": 1.45
+        },
+        "long_merged_exchange_turns": {
+          "count": 0,
+          "durations": []
+        },
+        "longest_turn_seconds": 11.05,
+        "shortest_non_empty_turn_seconds": 0.52,
+        "speaker_count_error": 0
+      }
+    }
+  },
+  "text_comparison": {
+    "auto_vs_tr_automatic": {
+      "auto_words": 111,
+      "tr_words": 111,
+      "differing_word_positions": 0,
+      "similarity_ratio": 1.0
+    },
+    "auto_vs_tr_known4": {
+      "auto_words": 111,
+      "tr_words": 111,
+      "differing_word_positions": 0,
+      "similarity_ratio": 1.0
+    }
+  }
+}
