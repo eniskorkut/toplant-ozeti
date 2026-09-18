@@ -84,9 +84,12 @@ def test_queued_to_completed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database: Database
 ) -> None:
     settings = make_settings(tmp_path)
-    monkeypatch.setattr(pipeline_module, "transcribe", lambda path, settings: fake_stt_result())
     monkeypatch.setattr(
-        pipeline_module, "diarize", lambda path, settings, **kw: fake_diarization_result()
+        "app.services.providers.local.transcribe", lambda path, settings: fake_stt_result()
+    )
+    monkeypatch.setattr(
+        "app.services.providers.local.diarize",
+        lambda path, settings, **kw: fake_diarization_result(),
     )
 
     async def run() -> tuple[str, list[TranscriptTurn]]:
@@ -122,8 +125,10 @@ def test_queued_to_failed_removes_partial_turns(
     def failing_diarize(path, settings, **kwargs):
         raise DiarizationError("simulated diarization failure")
 
-    monkeypatch.setattr(pipeline_module, "transcribe", lambda path, settings: fake_stt_result())
-    monkeypatch.setattr(pipeline_module, "diarize", failing_diarize)
+    monkeypatch.setattr(
+        "app.services.providers.local.transcribe", lambda path, settings: fake_stt_result()
+    )
+    monkeypatch.setattr("app.services.providers.local.diarize", failing_diarize)
 
     async def run() -> tuple[str, str | None, int]:
         async with database.session_factory() as session:
@@ -150,7 +155,7 @@ def test_missing_model_fails_with_clear_message(
     def failing_stt(path, settings):
         raise SttError("whisper.cpp model not found: /models/whisper/missing.bin")
 
-    monkeypatch.setattr(pipeline_module, "transcribe", failing_stt)
+    monkeypatch.setattr("app.services.providers.local.transcribe", failing_stt)
 
     async def run() -> tuple[str, str | None]:
         async with database.session_factory() as session:
@@ -209,8 +214,10 @@ def test_known_speaker_count_is_forwarded(
         captured["requested"] = requested_speaker_count
         return fake_diarization_result()
 
-    monkeypatch.setattr(pipeline_module, "transcribe", lambda path, settings: fake_stt_result())
-    monkeypatch.setattr(pipeline_module, "diarize", recording_diarize)
+    monkeypatch.setattr(
+        "app.services.providers.local.transcribe", lambda path, settings: fake_stt_result()
+    )
+    monkeypatch.setattr("app.services.providers.local.diarize", recording_diarize)
 
     async def run() -> None:
         async with database.session_factory() as session:

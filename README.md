@@ -202,6 +202,36 @@ docker compose logs -f worker
 docker compose exec backend uv run --locked pytest -m integration -q   # real-model E2E
 ```
 
+### Transcription providers (local default, ElevenLabs opt-in)
+
+```bash
+MEETING_TRANSCRIPTION_PROVIDER=local        # default: whisper.cpp + TitaNet, audio stays local
+MEETING_TRANSCRIPTION_PROVIDER=elevenlabs   # opt-in cloud path: ElevenLabs Scribe v2
+ELEVENLABS_API_KEY=...                      # only required for the elevenlabs provider
+ELEVENLABS_STT_MODEL=scribe_v2
+ELEVENLABS_LANGUAGE_CODE=tur
+ELEVENLABS_TIMEOUT_SECONDS=120
+ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a known speaker count
+```
+
+- **Local (default):** whisper.cpp v1.9.4 large-v3-turbo Q8_0 + TitaNet diarization
+  (threshold 0.80, `min_duration_on 0.3` / `min_duration_off 0.5`) and the production merge.
+  Audio never leaves the machine. Behavior is unchanged by this feature.
+- **ElevenLabs (opt-in):** audio is uploaded to ElevenLabs, internet and quota/provider
+  availability are required, and **normal ElevenLabs retention may apply** for the current
+  non-zero-retention account. Word timestamps and `speaker_id` come directly from the
+  provider, so the whisper↔diarization merge is not used on this path. A requested
+  `speaker_count` is forwarded as `num_speakers` (documented as a maximum expected
+  speaker count); `diarization_threshold` is only sent when no speaker count is given.
+- Failures are explicit: the meeting is marked `failed` with a safe message and there is
+  **no silent fallback** to the local pipeline (that would make latency, quality and
+  privacy behavior unpredictable).
+- The provider and model are stored on the meeting (`transcription_provider`,
+  `transcription_model`) and exposed on `GET /api/v1/meetings/{id}`; keys, headers and raw
+  provider responses are never persisted or exposed.
+- Real cloud verification is opt-in only:
+  `RUN_ELEVENLABS_INTEGRATION=1 docker compose run --rm -e ELEVENLABS_API_KEY ... pytest -m integration`.
+
 ### Grounded meeting analysis (backend)
 
 ```text

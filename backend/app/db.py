@@ -22,6 +22,14 @@ SQLITE_PRAGMAS = (
     "PRAGMA foreign_keys=ON",
 )
 
+# create_all never alters existing tables, so additive columns are migrated here.
+SQLITE_ADDITIVE_MIGRATIONS: dict[str, dict[str, str]] = {
+    "meetings": {
+        "transcription_provider": "VARCHAR(32)",
+        "transcription_model": "VARCHAR(64)",
+    },
+}
+
 
 def configure_sqlite(engine: AsyncEngine) -> None:
     """Apply the shared SQLite hardening to every new connection.
@@ -51,6 +59,14 @@ class Database:
     async def init(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            for table, columns in SQLITE_ADDITIVE_MIGRATIONS.items():
+                table_info = await connection.exec_driver_sql(f"PRAGMA table_info({table})")
+                existing = {row[1] for row in table_info.all()}
+                for column, column_type in columns.items():
+                    if column not in existing:
+                        await connection.exec_driver_sql(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
+                        )
 
     async def dispose(self) -> None:
         await self.engine.dispose()

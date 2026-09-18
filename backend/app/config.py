@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -68,6 +68,29 @@ class Settings(BaseSettings):
     # Worker loop.
     worker_poll_seconds: float = 2.0
 
+    # --- transcription provider selection -------------------------------------
+    # "local" (default) keeps the whisper.cpp + TitaNet stack; "elevenlabs" is the
+    # opt-in cloud path. The local path never depends on this being configured.
+    transcription_provider: str = "local"
+
+    # ElevenLabs Scribe (only used when transcription_provider == "elevenlabs").
+    # validation_alias keeps the documented ELEVENLABS_* env names (no MEETING_ prefix).
+    elevenlabs_api_key: SecretStr | None = Field(
+        default=None, validation_alias="ELEVENLABS_API_KEY"
+    )
+    elevenlabs_stt_model: str = Field(
+        default="scribe_v2", validation_alias="ELEVENLABS_STT_MODEL"
+    )
+    elevenlabs_language_code: str = Field(
+        default="tur", validation_alias="ELEVENLABS_LANGUAGE_CODE"
+    )
+    elevenlabs_timeout_seconds: float = Field(
+        default=120.0, validation_alias="ELEVENLABS_TIMEOUT_SECONDS"
+    )
+    elevenlabs_diarization_threshold: float | None = Field(
+        default=None, validation_alias="ELEVENLABS_DIARIZATION_THRESHOLD"
+    )
+
     # --- meeting analysis (grounded LLM) --------------------------------------
     # Provider selection: "openai_compatible" (default) or "mock" for tests/local E2E.
     llm_provider: str = "openai_compatible"
@@ -81,6 +104,21 @@ class Settings(BaseSettings):
     # Not every OpenAI-compatible endpoint accepts response_format; only send it
     # when the operator explicitly enables JSON mode.
     llm_json_mode: bool = False
+
+    @field_validator("elevenlabs_diarization_threshold", mode="before")
+    @classmethod
+    def _empty_threshold_is_none(cls, value: object) -> object:
+        # Compose passes empty strings for unset variables.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("elevenlabs_api_key", mode="before")
+    @classmethod
+    def _empty_key_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def llm_configured(self) -> bool:

@@ -53,6 +53,9 @@ class MeetingStatus(BaseModel):
     requested_speaker_count: int | None
     processing_error: str | None
     has_transcript: bool
+    # Safe provider metadata only (never keys, config internals or raw responses).
+    transcription_provider: str | None = None
+    transcription_model: str | None = None
 
 
 class MeetingSummary(BaseModel):
@@ -134,6 +137,8 @@ def _meeting_status(meeting: Meeting, has_transcript: bool) -> MeetingStatus:
         requested_speaker_count=meeting.requested_speaker_count,
         processing_error=meeting.processing_error,
         has_transcript=has_transcript,
+        transcription_provider=meeting.transcription_provider,
+        transcription_model=meeting.transcription_model,
     )
 
 

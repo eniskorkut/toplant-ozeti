@@ -55,6 +55,9 @@ class Meeting(Base):
     processing_wav_path: Mapped[str] = mapped_column(String(255))
     requested_speaker_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How the transcript was produced (safe metadata only; never keys or raw responses).
+    transcription_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    transcription_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     turns: Mapped[list[TranscriptTurn]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan", order_by="TranscriptTurn.ordinal"

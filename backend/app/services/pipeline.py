@@ -23,17 +23,7 @@ from app.models import (
     Meeting,
     TranscriptTurn,
 )
-from app.services.diarization import DiarizationError, diarize
-from app.services.merge import (
-    DiarizationSegment as MergeSegment,
-)
-from app.services.merge import (
-    Word as MergeWord,
-)
-from app.services.merge import (
-    merge_words,
-)
-from app.services.stt import SttError, transcribe
+from app.services.transcription import ProviderError, build_provider, form_turns
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +105,16 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
         meeting.status = MEETING_STATUS_COMPLETED
         meeting.processing_error = None
         meeting.duration_seconds = output["duration_seconds"]
+        meeting.transcription_provider = output["provider"]
+        meeting.transcription_model = output["model"]
         await session.commit()
         logger.info(
-            "meeting %s completed: %d turns, %d unresolved words, %.1fs inference",
+            "meeting %s completed: %d turns, %d unresolved words, %.1fs provider=%s",
             meeting_id,
             len(output["turns"]),
             output["unresolved_words"],
             output["inference_seconds"],
+            output["provider"],
         )
     except Exception as exc:
         await session.rollback()
@@ -137,26 +130,25 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
 def _run_inference(
     audio_path, requested_speaker_count: int | None, settings: Settings
 ) -> dict:
-    """Blocking inference step (runs in a worker thread)."""
+    """Blocking inference step (runs in a worker thread).
+
+    The provider produces normalized words (anonymous speaker ids, possibly absent);
+    turn formation is shared by every provider and mirrors the local merge semantics.
+    """
     import wave
 
     with wave.open(str(audio_path), "rb") as wav_file:
         duration_seconds = wav_file.getnframes() / wav_file.getframerate()
 
-    stt_result = transcribe(audio_path, settings)
-    diarization_result = diarize(
-        audio_path, settings, requested_speaker_count=requested_speaker_count
+    provider = build_provider(settings)
+    result = provider.transcribe(
+        audio_path,
+        requested_speaker_count=requested_speaker_count,
+        settings=settings,
     )
+    turns = form_turns(result.words)
 
-    merge_result = merge_words(
-        [MergeWord(word.start, word.end, word.text) for word in stt_result.words],
-        [
-            MergeSegment(segment.start, segment.end, segment.speaker)
-            for segment in diarization_result.segments
-        ],
-        tolerance=settings.merge_boundary_tolerance_seconds,
-    )
-
+    unresolved = sum(1 for word in result.words if word.speaker_id is None)
     return {
         "duration_seconds": round(duration_seconds, 3),
         "turns": [
@@ -166,19 +158,20 @@ def _run_inference(
                 "end": round(turn.end, 3),
                 "text": turn.text,
             }
-            for turn in merge_result.turns
+            for turn in turns
         ],
-        "unresolved_words": merge_result.unresolved_words,
-        "assigned_words": merge_result.assigned_words,
-        "speaker_count": merge_result.speaker_count,
-        "inference_seconds": stt_result.inference_seconds + diarization_result.inference_seconds,
-        "language": stt_result.language,
-        "speaker_label_map": merge_result.speaker_label_map,
+        "unresolved_words": unresolved,
+        "assigned_words": len(result.words) - unresolved,
+        "speaker_count": len({word.speaker_id for word in result.words if word.speaker_id}),
+        "inference_seconds": result.latency_seconds,
+        "language": result.language,
+        "provider": result.provider,
+        "model": result.model,
     }
 
 
 def _safe_error_message(exc: Exception) -> str:
-    if isinstance(exc, (SttError, DiarizationError, FileNotFoundError)):
+    if isinstance(exc, (ProviderError, FileNotFoundError)):
         message = str(exc)
     else:
         message = f"{type(exc).__name__}: {exc}"
