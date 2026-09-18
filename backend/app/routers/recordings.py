@@ -1,12 +1,18 @@
+import asyncio
 import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.db import get_session
+from app.models import MEETING_STATUS_UPLOADED, Meeting
 from app.services.ffmpeg import FFmpegConversionError, FFmpegError, FFmpegNotFoundError
 from app.services.recordings import (
+    MP3_FILENAME,
+    WAV_FILENAME,
     InvalidAudioFileError,
     UnsupportedAudioTypeError,
     process_recording,
@@ -34,6 +40,7 @@ class RecordingProcessingWav(BaseModel):
 
 class RecordingCreated(BaseModel):
     recording_id: str
+    meeting_id: str
     duration_seconds: float
     input: RecordingInput
     mp3: RecordingMp3
@@ -42,15 +49,19 @@ class RecordingCreated(BaseModel):
 
 
 @router.post("", response_model=RecordingCreated, status_code=status.HTTP_201_CREATED)
-def create_recording(
+async def create_recording(
     audio: Annotated[UploadFile, File(description="Audio recorded by the browser")],
     mime_type: Annotated[str, Form(description="MIME type reported by MediaRecorder")],
     settings: Annotated[Settings, Depends(get_settings)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     client_duration_seconds: Annotated[float | None, Form(ge=0)] = None,
 ) -> RecordingCreated:
     """Accept one recording, store it, and convert it to MP3 + 16 kHz mono WAV."""
     try:
-        artifacts = process_recording(
+        # Blocking file streaming + ffmpeg conversion run in a worker thread so the
+        # API event loop is never blocked by the upload.
+        artifacts = await asyncio.to_thread(
+            process_recording,
             upload_file=audio.file,
             mime_type=mime_type,
             settings=settings,
@@ -88,8 +99,21 @@ def create_recording(
             artifacts.duration_seconds,
         )
 
+    # The upload is also the meeting registration: the processing pipeline queues
+    # meetings, never raw recordings.
+    meeting = Meeting(
+        id=artifacts.recording_id,
+        status=MEETING_STATUS_UPLOADED,
+        duration_seconds=round(artifacts.duration_seconds, 3),
+        audio_mp3_path=f"{artifacts.recording_id}/{MP3_FILENAME}",
+        processing_wav_path=f"{artifacts.recording_id}/{WAV_FILENAME}",
+    )
+    session.add(meeting)
+    await session.commit()
+
     return RecordingCreated(
         recording_id=artifacts.recording_id,
+        meeting_id=meeting.id,
         duration_seconds=round(artifacts.duration_seconds, 3),
         input=RecordingInput(
             mime_type=artifacts.input_mime_type,

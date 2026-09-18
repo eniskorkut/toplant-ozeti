@@ -65,3 +65,6 @@ benchmarks/diarization/results/voxconverse.md
 benchmarks/diarization/results/voxconverse-state.json
 benchmarks/diarization/results/scoring/
 benchmarks/merge/results/
+data/*.db
+data/*.db-wal
+data/*.db-shm

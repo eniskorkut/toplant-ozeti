@@ -168,6 +168,40 @@ npm run dev
 If port 3000 is already occupied by an unrelated local application, Next.js may pick another
 port (for example 3001). That is expected; the default port is intentionally left as 3000.
 
+### Meeting processing pipeline (backend)
+
+```text
+upload (POST /api/recordings)
+        ↓  meeting row created (status: uploaded)
+POST /api/v1/meetings/{id}/process   (status: queued)
+        ↓  dedicated worker container (compose service `worker`)
+claim (queued → processing, atomic)
+        ↓
+whisper.cpp large-v3-turbo Q8_0 (-ojf timestamps, no -nt)
+        ↓
+sherpa-onnx diarization (pyannote 3.0 + TitaNet Small, threshold 0.80,
+or num_clusters = N when speaker_count is supplied)
+        ↓
+merge (max overlap → midpoint → 250 ms tolerance → unresolved stays unresolved)
+        ↓
+transcript turns (Kişi N session-local labels)   (status: completed)
+```
+
+- The API never runs inference; a separate worker process claims jobs from the shared
+  SQLite database (`data/app.db`, git-ignored). No Redis/Celery.
+- `GET /api/v1/meetings/{id}` → status; `GET /api/v1/meetings/{id}/transcript` → turns.
+- Unresolved words are preserved as their own turns labelled `Bilinmeyen` (never
+  attributed to a neighbouring speaker). No voiceprints or embeddings are stored.
+- Models are mounted, never baked into image layers
+  (`/models/whisper`, `/models/diarization`); paths and thread counts are configured
+  with `MEETING_*` environment variables (see `backend/app/config.py`).
+
+```bash
+docker compose up -d backend worker     # API + processing worker
+docker compose logs -f worker
+docker compose exec backend uv run --locked pytest -m integration -q   # real-model E2E
+```
+
 ### Frontend API base URL
 
 Copy `frontend/.env.local.example` to `frontend/.env.local` and adjust if needed:

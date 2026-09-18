@@ -18,11 +18,36 @@ services:
       # Persistent local meeting data on the host. `app/config.py` resolves the
       # data directory relative to the source tree, i.e. /data/meetings here.
       - ./data:/data
+      # Model caches: mounted, never baked into image layers. The defaults in
+      # app/config.py point at these exact container paths.
+      - ./benchmarks/stt/.cache/whisper-cpp:/models/whisper:ro
+      - ./benchmarks/diarization/models:/models/diarization:ro
     environment:
       MEETING_DATA_DIR: /data/meetings
+      MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 15s
+
+  # Dedicated CPU processing worker (same image as the API, no HTTP server).
+  # It claims queued meetings from the shared SQLite database and runs
+  # whisper.cpp + sherpa-onnx + merge, then stores the transcript.
+  worker:
+    image: meeting-intelligence-backend:dev
+    build:
+      context: ./backend
+    command: ["uv", "run", "--locked", "python", "-m", "app.worker"]
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+      - ./benchmarks/stt/.cache/whisper-cpp:/models/whisper:ro
+      - ./benchmarks/diarization/models:/models/diarization:ro
+    environment:
+      MEETING_DATA_DIR: /data/meetings
+      MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
+    depends_on:
+      backend:
+        condition: service_healthy

@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -6,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
+from app.db import Database, get_session
 from app.main import app
 
 
@@ -58,11 +60,26 @@ def meetings_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(meetings_dir: Path) -> Iterator[TestClient]:
-    settings = Settings(data_dir=meetings_dir)
+def database(tmp_path: Path) -> Iterator[Database]:
+    """Isolated SQLite database per test (never the runtime database)."""
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    asyncio.run(db.init())
+    yield db
+    asyncio.run(db.dispose())
+
+
+@pytest.fixture
+def client(meetings_dir: Path, database: Database) -> Iterator[TestClient]:
+    settings = Settings(data_dir=meetings_dir, database_url=database.url)
     app.dependency_overrides[get_settings] = lambda: settings
-    with TestClient(app) as test_client:
-        yield test_client
+
+    async def override_session():
+        async for session in database.sessions():
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    # No context manager: the lifespan must not touch the runtime database.
+    yield TestClient(app)
     app.dependency_overrides.clear()
 
 

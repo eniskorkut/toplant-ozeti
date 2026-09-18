@@ -1,6 +1,33 @@
 # Backend development runtime: Linux + Python 3.12.
 # The base image is multi-arch, so the build uses the host architecture
 # automatically (Apple Silicon locally, x86_64 on future Linux deployments).
+
+# Production STT runtime: whisper.cpp pinned to the validated release. CPU only,
+# static libs, same build flags as the benchmark round. The model itself is NOT
+# baked into the image (multi-GB assets stay in the mounted model cache).
+FROM python:3.12-slim AS whisper-cpp-build
+
+ARG WHISPER_CPP_REF=v1.9.4
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${WHISPER_CPP_REF}" https://github.com/ggml-org/whisper.cpp.git /opt/whisper.cpp
+
+RUN cmake \
+        -S /opt/whisper.cpp \
+        -B /opt/whisper.cpp/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DWHISPER_BUILD_TESTS=OFF \
+        -DWHISPER_BUILD_SERVER=OFF \
+    && cmake --build /opt/whisper.cpp/build --config Release -j"$(nproc)"
+
 FROM python:3.12-slim
 
 # The installer is not needed: uv is copied from its official image.
@@ -21,7 +48,10 @@ RUN apt-get update \
         ca-certificates \
         curl \
         ffmpeg \
+        libgomp1 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=whisper-cpp-build /opt/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
 
 WORKDIR /app
 

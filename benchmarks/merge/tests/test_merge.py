@@ -104,6 +104,57 @@ class TurnFormationTests(unittest.TestCase):
         self.assertEqual(result["rapid_flips"], 1)
 
 
+class UnresolvedBoundaryTests(unittest.TestCase):
+    def test_unresolved_word_breaks_same_speaker_turn(self) -> None:
+        # speaker_0 word, unresolved word, speaker_0 word -> two turns, not one
+        words = [
+            Word(0.0, 0.5, "bir"),
+            Word(5.0, 5.5, "bilinmeyen"),
+            Word(6.0, 6.5, "iki"),
+        ]
+        segments = [DiarizationSegment(0.0, 1.0, "speaker_0"), DiarizationSegment(6.0, 7.0, "speaker_0")]
+        result = merge(words, segments, audio_seconds=7.0)
+
+        self.assertEqual(len(result["turns"]), 2)
+        self.assertEqual([turn["speaker"] for turn in result["turns"]], ["speaker_0", "speaker_0"])
+        self.assertEqual(result["unresolved_words"], 1)
+
+    def test_unresolved_text_is_excluded_from_turns_but_counted(self) -> None:
+        words = [Word(0.0, 0.5, "a"), Word(5.0, 5.5, "kayip")]
+        segments = [DiarizationSegment(0.0, 1.0, "speaker_0")]
+        result = merge(words, segments, audio_seconds=6.0)
+
+        turn_text = " ".join(turn["text"] for turn in result["turns"])
+        self.assertNotIn("kayip", turn_text)
+        self.assertEqual(result["unresolved_words"], 1)
+
+
+class EqualOverlapTests(unittest.TestCase):
+    def test_equal_overlap_on_shared_boundary_is_unresolved(self) -> None:
+        # word 0.0-2.0 overlaps both segments by exactly 1.0 s and the midpoint 1.0
+        # lies on the shared boundary, so it is owned by both -> unresolved (safe rule)
+        segments = [DiarizationSegment(0.0, 1.0, "speaker_0"), DiarizationSegment(1.0, 3.0, "speaker_1")]
+        word = Word(0.0, 2.0, "x")
+        self.assertIsNone(assign_speaker(word, segments))
+
+    def test_equal_overlap_with_ambiguous_midpoint_is_unresolved(self) -> None:
+        # both segments own the midpoint (overlapping diarization segments)
+        segments = [DiarizationSegment(0.0, 2.0, "speaker_0"), DiarizationSegment(0.0, 2.0, "speaker_1")]
+        word = Word(0.5, 1.5, "x")
+        self.assertIsNone(assign_speaker(word, segments))
+
+    def test_equal_overlap_order_does_not_matter(self) -> None:
+        segments_a = [DiarizationSegment(0.0, 1.0, "speaker_0"), DiarizationSegment(1.0, 3.0, "speaker_1")]
+        segments_b = list(reversed(segments_a))
+        word = Word(0.0, 2.0, "x")
+        self.assertEqual(assign_speaker(word, segments_a), assign_speaker(word, segments_b))
+
+    def test_equidistant_tolerance_candidates_are_unresolved(self) -> None:
+        segments = [DiarizationSegment(0.0, 1.0, "speaker_0"), DiarizationSegment(2.0, 3.0, "speaker_1")]
+        word = Word(1.4, 1.6, "x")
+        self.assertIsNone(assign_speaker(word, segments, tolerance=0.25))
+
+
 class InvariantTests(unittest.TestCase):
     def test_clean_merge_has_no_violations(self) -> None:
         words = [Word(0.0, 0.5, "a"), Word(0.6, 1.0, "b")]

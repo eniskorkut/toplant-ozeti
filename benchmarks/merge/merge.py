@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 DEFAULT_BOUNDARY_TOLERANCE_SECONDS = 0.25
 SHORT_TURN_SECONDS = 1.0
 RAPID_FLIP_SECONDS = 0.4
+OVERLAP_EPSILON_SECONDS = 1e-9
 
 
 @dataclass(frozen=True)
@@ -60,44 +61,71 @@ def overlap_seconds(word: Word, segment: DiarizationSegment) -> float:
     return min(word.end, segment.end) - max(word.start, segment.start)
 
 
+def _midpoint_speaker(word: Word, segments: list[DiarizationSegment]) -> str | None:
+    """Speaker owning the word midpoint, only when exactly one does."""
+    midpoint = (word.start + word.end) / 2.0
+    owners = {segment.speaker for segment in segments if segment.start <= midpoint <= segment.end}
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
 def assign_speaker(
     word: Word,
     segments: list[DiarizationSegment],
     tolerance: float = DEFAULT_BOUNDARY_TOLERANCE_SECONDS,
 ) -> str | None:
-    """Return the diarization speaker for one word, or None when unresolved."""
-    best_speaker: str | None = None
-    best_overlap = 0.0
-    for segment in segments:
-        overlap = overlap_seconds(word, segment)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_speaker = segment.speaker
-    if best_speaker is not None:
-        return best_speaker
+    """Return the diarization speaker for one word, or None when unresolved.
 
-    midpoint = (word.start + word.end) / 2.0
-    for segment in segments:
-        if segment.start <= midpoint <= segment.end:
-            return segment.speaker
+    Deterministic rules:
+    1. unique maximum temporal overlap wins;
+    2. equal maximum overlap is a tie -> resolve with the midpoint when exactly one
+       speaker owns it, otherwise leave unresolved (never pick by segment order);
+    3. collapsed/zero-length intervals -> midpoint rule;
+    4. no overlap -> nearest segment within the boundary tolerance, only if the
+       nearest distance identifies exactly one speaker;
+    5. anything else stays unresolved.
+    """
+    overlaps = [(overlap_seconds(word, segment), segment) for segment in segments]
+    max_overlap = max((overlap for overlap, _ in overlaps), default=0.0)
 
-    nearest_speaker: str | None = None
-    nearest_gap = tolerance
+    if max_overlap > 0:
+        top = [segment for overlap, segment in overlaps if overlap >= max_overlap - OVERLAP_EPSILON_SECONDS]
+        if len(top) == 1:
+            return top[0].speaker
+        midpoint_speaker = _midpoint_speaker(word, segments)
+        if midpoint_speaker is not None:
+            return midpoint_speaker
+        return None
+
+    midpoint_speaker = _midpoint_speaker(word, segments)
+    if midpoint_speaker is not None:
+        return midpoint_speaker
+
+    candidates: list[tuple[float, str]] = []
     for segment in segments:
         gap = max(segment.start - word.end, word.start - segment.end)
-        if 0 <= gap < nearest_gap or (gap <= tolerance and gap < nearest_gap):
-            nearest_gap = gap
-            nearest_speaker = segment.speaker
-    return nearest_speaker
+        if gap <= tolerance:
+            candidates.append((gap, segment.speaker))
+    if not candidates:
+        return None
+
+    nearest_gap = min(gap for gap, _ in candidates)
+    nearest_speakers = {
+        speaker for gap, speaker in candidates if gap <= nearest_gap + OVERLAP_EPSILON_SECONDS
+    }
+    return next(iter(nearest_speakers)) if len(nearest_speakers) == 1 else None
 
 
 def form_turns(words: list[Word], speakers: list[str | None]) -> list[Turn]:
     """Merge consecutive words of the same speaker; unresolved words break turns."""
     turns: list[Turn] = []
+    previous_resolved = False
     for word, speaker in zip(words, speakers, strict=True):
         if speaker is None:
+            # An unresolved word terminates the current turn: two same-speaker turns
+            # separated by unresolved words must not be merged into one.
+            previous_resolved = False
             continue
-        if turns and turns[-1].speaker == speaker:
+        if previous_resolved and turns and turns[-1].speaker == speaker:
             turn = turns[-1]
             turn.end = word.end
             turn.text = f"{turn.text} {word.text}".strip()
@@ -114,6 +142,7 @@ def form_turns(words: list[Word], speakers: list[str | None]) -> list[Turn]:
                     word_list=[word],
                 )
             )
+        previous_resolved = True
     return turns
 
 
