@@ -1,0 +1,230 @@
+{
+  "dtw_check": {
+    "heuristic": {
+      "words": 106,
+      "decoding_seconds": 14.776,
+      "flash_attention_disabled": false
+    },
+    "heuristic_nfa": {
+      "words": 96,
+      "decoding_seconds": 15.875,
+      "flash_attention_disabled": true
+    },
+    "dtw": {
+      "words": 96,
+      "decoding_seconds": 16.163,
+      "flash_attention_disabled": false
+    },
+    "text_identical_heuristic_vs_dtw": false,
+    "text_identical_heuristic_vs_heuristic_nfa": false,
+    "text_identical_heuristic_nfa_vs_dtw": true,
+    "timestamp_shift_seconds": {
+      "median_abs_start_delta_vs_heuristic_offsets": 0.31,
+      "max_abs_start_delta_vs_heuristic_offsets": 1.31,
+      "point_words": 27
+    }
+  },
+  "calibration": {
+    "radius=0.25,margin=0.10": {
+      "radius": 0.25,
+      "margin": 0.1,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0204,
+      "newly_resolved_words": 8,
+      "compared_words": 667
+    },
+    "radius=0.25,margin=0.20": {
+      "radius": 0.25,
+      "margin": 0.2,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0204,
+      "newly_resolved_words": 8,
+      "compared_words": 667
+    },
+    "radius=0.25,margin=0.30": {
+      "radius": 0.25,
+      "margin": 0.3,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0204,
+      "newly_resolved_words": 8,
+      "compared_words": 667
+    },
+    "radius=0.50,margin=0.10": {
+      "radius": 0.5,
+      "margin": 0.1,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=0.50,margin=0.20": {
+      "radius": 0.5,
+      "margin": 0.2,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=0.50,margin=0.30": {
+      "radius": 0.5,
+      "margin": 0.3,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=0.75,margin=0.10": {
+      "radius": 0.75,
+      "margin": 0.1,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=0.75,margin=0.20": {
+      "radius": 0.75,
+      "margin": 0.2,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=0.75,margin=0.30": {
+      "radius": 0.75,
+      "margin": 0.3,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=1.00,margin=0.10": {
+      "radius": 1.0,
+      "margin": 0.1,
+      "agreement": 0.8713,
+      "wrong_attribution_rate": 0.1287,
+      "unresolved_rate": 0.0102,
+      "newly_resolved_words": 15,
+      "compared_words": 668
+    },
+    "radius=1.00,margin=0.20": {
+      "radius": 1.0,
+      "margin": 0.2,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    },
+    "radius=1.00,margin=0.30": {
+      "radius": 1.0,
+      "margin": 0.3,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    }
+  },
+  "selection": {
+    "key": "radius=0.50,margin=0.30",
+    "config": {
+      "radius": 0.5,
+      "margin": 0.3,
+      "agreement": 0.8726,
+      "wrong_attribution_rate": 0.1274,
+      "unresolved_rate": 0.0117,
+      "newly_resolved_words": 14,
+      "compared_words": 667
+    }
+  },
+  "validation": {
+    "M0-heuristic": {
+      "agreement": 0.7911,
+      "wrong_attribution_rate": 0.2089,
+      "unresolved_words": 56,
+      "unresolved_rate": 0.0385,
+      "speaker_turns": 64,
+      "rapid_flips": 10
+    },
+    "M0n-heuristic-nfa": {
+      "agreement": 0.7952,
+      "wrong_attribution_rate": 0.2048,
+      "unresolved_words": 45,
+      "unresolved_rate": 0.0418,
+      "speaker_turns": 55,
+      "rapid_flips": 8
+    },
+    "M1-dtw": {
+      "agreement": 0.8991,
+      "wrong_attribution_rate": 0.1009,
+      "unresolved_words": 23,
+      "unresolved_rate": 0.0214,
+      "speaker_turns": 52,
+      "rapid_flips": 11
+    },
+    "M2-dtw-context": {
+      "agreement": 0.8937,
+      "wrong_attribution_rate": 0.1063,
+      "unresolved_words": 15,
+      "unresolved_rate": 0.0139,
+      "speaker_turns": 38,
+      "rapid_flips": 3
+    }
+  },
+  "real_meeting": {
+    "M0-baseline": {
+      "words": 106,
+      "assigned_words": 85,
+      "unresolved_words": 21,
+      "distinct_speakers": 4,
+      "turns": 13,
+      "speaker_changes": 12,
+      "rapid_flips": 0,
+      "unknown_turns": 5,
+      "newly_resolved_words": 0,
+      "unresolved_causes": {
+        "overlap_region": 16,
+        "coverage_gap": 5
+      }
+    },
+    "M1-dtw": {
+      "words": 96,
+      "assigned_words": 79,
+      "unresolved_words": 17,
+      "distinct_speakers": 4,
+      "turns": 22,
+      "speaker_changes": 21,
+      "rapid_flips": 6,
+      "unknown_turns": 10,
+      "newly_resolved_words": 0,
+      "unresolved_causes": {
+        "overlap_region": 12,
+        "coverage_gap": 5
+      }
+    },
+    "M2-context": {
+      "words": 96,
+      "assigned_words": 88,
+      "unresolved_words": 8,
+      "distinct_speakers": 4,
+      "turns": 12,
+      "speaker_changes": 11,
+      "rapid_flips": 4,
+      "unknown_turns": 5,
+      "newly_resolved_words": 9,
+      "unresolved_causes": {
+        "overlap_region": 5,
+        "coverage_gap": 3
+      }
+    }
+  }
+}

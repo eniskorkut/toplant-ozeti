@@ -71,3 +71,4 @@ data/*.db-shm
 
 # Real-meeting diagnostic outputs (contain transcript text)
 benchmarks/real-meeting-diagnostic/output/
+benchmarks/overlap-merge/results/
