@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -238,6 +238,98 @@ async def list_meetings(
         for meeting, turns, analysis_status in rows
     ]
     return MeetingList(meetings=meetings, count=len(meetings))
+
+
+@router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_meeting(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Delete a meeting with its transcript and analysis.
+
+    Safety rules:
+    - queued/processing meetings (and meetings with an active analysis) are
+      refused with 409 so no worker writes into a deleted row
+    - artifacts are only removed after the DB commit and only when no other
+      meeting still references the same relative path (comparison meetings
+      intentionally share the source audio)
+    - every filesystem target is resolved from the persisted relative path and
+      must stay inside the configured data directory
+    - filesystem cleanup is best effort: a failure never breaks DB consistency
+    """
+    meeting = await _get_meeting(session, meeting_id)
+
+    if meeting.status in (MEETING_STATUS_QUEUED, MEETING_STATUS_PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Meeting is being processed and cannot be deleted.",
+        )
+
+    analysis_status = (
+        await session.execute(
+            select(MeetingAnalysis.status).where(MeetingAnalysis.meeting_id == meeting_id)
+        )
+    ).scalar_one_or_none()
+    if analysis_status in (ANALYSIS_STATUS_QUEUED, ANALYSIS_STATUS_PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Meeting analysis is running and cannot be deleted.",
+        )
+
+    artifacts = {meeting.audio_mp3_path, meeting.processing_wav_path} - {None, ""}
+
+    await session.execute(delete(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id))
+    await session.execute(delete(MeetingAnalysis).where(MeetingAnalysis.meeting_id == meeting_id))
+    await session.execute(delete(Meeting).where(Meeting.id == meeting_id))
+    await session.commit()
+
+    await _cleanup_unreferenced_artifacts(session, settings, meeting_id, artifacts)
+    logger.info("meeting %s deleted", meeting_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _cleanup_unreferenced_artifacts(
+    session: AsyncSession,
+    settings: Settings,
+    meeting_id: str,
+    artifacts: set[str],
+) -> None:
+    meetings_root = settings.meetings_dir.resolve()
+    for relative_path in sorted(artifacts):
+        still_referenced = (
+            await session.execute(
+                select(Meeting.id)
+                .where(
+                    or_(
+                        Meeting.audio_mp3_path == relative_path,
+                        Meeting.processing_wav_path == relative_path,
+                    )
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if still_referenced is not None:
+            continue
+
+        target = (meetings_root / relative_path).resolve()
+        if meetings_root not in target.parents:
+            logger.warning(
+                "meeting %s: refusing to delete artifact outside the data directory", meeting_id
+            )
+            continue
+
+        try:
+            target.unlink(missing_ok=True)
+            parent = target.parent
+            if parent != meetings_root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            logger.warning(
+                "meeting %s: artifact cleanup failed (database stays consistent)",
+                meeting_id,
+                exc_info=True,
+            )
 
 
 @router.get("/{meeting_id}/audio")

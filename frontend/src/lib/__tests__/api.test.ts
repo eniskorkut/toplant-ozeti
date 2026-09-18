@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  deleteMeeting,
   getMeeting,
   getTranscript,
   getTranscriptionProviders,
@@ -155,6 +156,29 @@ describe("api client", () => {
     expect(url).toBe("http://localhost:8000/api/recordings");
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get("mime_type")).toBe("audio/webm");
+  });
+
+  it("deletes a meeting through the versioned endpoint", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(deleteMeeting("m1")).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8000/api/v1/meetings/m1");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("maps a 409 delete conflict to an ApiError", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ detail: "Meeting is being processed and cannot be deleted." }, 409),
+    );
+
+    await expect(deleteMeeting("m1")).rejects.toMatchObject({
+      status: 409,
+      message: "Meeting is being processed and cannot be deleted.",
+    });
   });
 
   it("ApiError keeps the status code for callers", () => {

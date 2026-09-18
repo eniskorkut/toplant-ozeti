@@ -182,6 +182,16 @@ export function listMeetings(): Promise<MeetingList> {
   return request<MeetingList>("/api/v1/meetings");
 }
 
+/** Deletes a meeting, its transcript/analysis and unreferenced artifacts. */
+export async function deleteMeeting(meetingId: string): Promise<void> {
+  const response = await fetch(`${getApiBaseUrl()}/api/v1/meetings/${meetingId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
+}
+
 export function getMeeting(meetingId: string): Promise<MeetingStatus> {
   return request<MeetingStatus>(`/api/v1/meetings/${meetingId}`);
 }

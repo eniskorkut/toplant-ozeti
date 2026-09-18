@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, listMeetings, type MeetingSummary } from "@/lib/api";
+import { ApiError, deleteMeeting, listMeetings, type MeetingSummary } from "@/lib/api";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { formatDateTime, formatDuration, statusLabel } from "@/lib/format";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -11,10 +12,34 @@ const PROVIDER_LABELS: Record<string, string> = {
   elevenlabs: "ElevenLabs",
 };
 
+function TrashIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 7h16" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  );
+}
+
 export function MeetingHistory() {
   const [meetings, setMeetings] = useState<MeetingSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [pendingDelete, setPendingDelete] = useState<MeetingSummary | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // State is only set from the promise callbacks, never synchronously in the effect.
   useEffect(() => {
@@ -33,6 +58,48 @@ export function MeetingHistory() {
       cancelled = true;
     };
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const removeMeeting = useCallback((meetingId: string) => {
+    setMeetings((current) =>
+      current ? current.filter((meeting) => meeting.meeting_id !== meetingId) : current,
+    );
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    const { meeting_id: meetingId } = pendingDelete;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteMeeting(meetingId);
+      removeMeeting(meetingId);
+      setNotice("Toplantı silindi.");
+      setPendingDelete(null);
+    } catch (deleteFailure) {
+      if (deleteFailure instanceof ApiError && deleteFailure.status === 404) {
+        // Already gone elsewhere: treat as success and refresh the visible list.
+        removeMeeting(meetingId);
+        setNotice("Toplantı silindi.");
+        setPendingDelete(null);
+      } else if (deleteFailure instanceof ApiError && deleteFailure.status === 409) {
+        setDeleteError(
+          "Toplantı şu anda işleniyor veya analiz ediliyor; işlem bitince tekrar deneyin.",
+        );
+      } else {
+        setDeleteError(
+          deleteFailure instanceof Error ? deleteFailure.message : "Toplantı silinemedi.",
+        );
+      }
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [pendingDelete, removeMeeting]);
 
   return (
     <section aria-labelledby="history" className="enter enter-3">
@@ -55,6 +122,16 @@ export function MeetingHistory() {
       {error ? (
         <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400">
           {error}
+        </p>
+      ) : null}
+
+      {notice ? (
+        <p
+          role="status"
+          aria-live="polite"
+          className="mb-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-300"
+        >
+          {notice}
         </p>
       ) : null}
 
@@ -97,10 +174,36 @@ export function MeetingHistory() {
               >
                 Aç
               </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteError(null);
+                  setPendingDelete(meeting);
+                }}
+                aria-label={`${formatDateTime(meeting.created_at)} · Toplantıyı sil`}
+                className="shrink-0 rounded-lg p-2 text-zinc-500 transition-colors duration-150 ease-out hover:bg-red-500/10 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:text-zinc-400 dark:hover:text-red-400"
+              >
+                <TrashIcon />
+              </button>
             </li>
           ))}
         </ul>
       ) : null}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Bu toplantı silinsin mi?"
+        description="Ses kaydı, transkript ve analiz verileri kalıcı olarak silinecek. Bu işlem geri alınamaz."
+        confirmLabel="Toplantıyı Sil"
+        cancelLabel="İptal"
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => {
+          setPendingDelete(null);
+          setDeleteError(null);
+        }}
+      />
     </section>
   );
 }

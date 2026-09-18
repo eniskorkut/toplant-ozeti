@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api";
@@ -6,12 +6,14 @@ import type { MeetingSummary } from "@/lib/api";
 import { MeetingHistory } from "@/components/meeting-history";
 
 const listMeetings = vi.fn();
+const deleteMeeting = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
     listMeetings: (...args: unknown[]) => listMeetings(...args),
+    deleteMeeting: (...args: unknown[]) => deleteMeeting(...args),
   };
 });
 
@@ -102,5 +104,104 @@ describe("MeetingHistory", () => {
     });
 
     expect(listMeetings).toHaveBeenCalledTimes(2);
+  });
+});
+
+async function openDeleteDialog(rowIndex = 0) {
+  const buttons = await screen.findAllByRole("button", { name: /Toplantıyı sil/ });
+  await act(async () => {
+    fireEvent.click(buttons[rowIndex]);
+  });
+  return screen.getByRole("dialog");
+}
+
+describe("MeetingHistory deletion", () => {
+  it("offers a delete action per row that only opens a confirmation", async () => {
+    render(<MeetingHistory />);
+    await screen.findAllByRole("listitem");
+
+    const buttons = screen.getAllByRole("button", { name: /Toplantıyı sil/ });
+    expect(buttons).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(buttons[0]);
+    });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Bu toplantı silinsin mi?")).toBeTruthy();
+    expect(
+      screen.getByText(/Ses kaydı, transkript ve analiz verileri kalıcı olarak silinecek/),
+    ).toBeTruthy();
+    expect(deleteMeeting).not.toHaveBeenCalled();
+  });
+
+  it("cancel closes the dialog and leaves the meeting untouched", async () => {
+    render(<MeetingHistory />);
+    await openDeleteDialog();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "İptal" }));
+    });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(deleteMeeting).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("confirmed delete calls the API and removes the row immediately", async () => {
+    deleteMeeting.mockResolvedValue(undefined);
+
+    render(<MeetingHistory />);
+    await openDeleteDialog(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Toplantıyı Sil" }));
+    });
+
+    expect(deleteMeeting).toHaveBeenCalledWith("newer");
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+    expect(screen.getByText("Toplantı silindi.")).toBeTruthy();
+  });
+
+  it("keeps the row and shows the error when the API fails", async () => {
+    deleteMeeting.mockRejectedValue(new ApiError(500, "sunucu hatası"));
+
+    render(<MeetingHistory />);
+    await openDeleteDialog(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Toplantıyı Sil" }));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("sunucu hatası");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("explains a 409 conflict for meetings that are still processing", async () => {
+    deleteMeeting.mockRejectedValue(new ApiError(409, "Meeting is being processed"));
+
+    render(<MeetingHistory />);
+    await openDeleteDialog(1);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Toplantıyı Sil" }));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/işleniyor veya analiz ediliyor/);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("treats an already-deleted meeting (404) as removed", async () => {
+    deleteMeeting.mockRejectedValue(new ApiError(404, "Meeting not found"));
+
+    render(<MeetingHistory />);
+    await openDeleteDialog(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Toplantıyı Sil" }));
+    });
+
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

@@ -102,7 +102,9 @@ def test_elevenlabs_provider_requires_a_key() -> None:
     provider = ElevenLabsProvider(settings(transcription_provider="elevenlabs"))
     with pytest.raises(ProviderConfigurationError):
         provider.transcribe(
-            Path("/nonexistent.wav"), requested_speaker_count=None, settings=settings()
+            Path("/nonexistent.wav"),
+            requested_speaker_count=None,
+            settings=settings(elevenlabs_api_key=""),
         )
 
 
