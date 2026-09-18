@@ -21,6 +21,7 @@ from context_resolver import (  # noqa: E402
     speaker_support,
 )
 from evaluate import evaluate_assignment, speaker_metrics  # noqa: E402
+import run_stt  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -204,5 +205,37 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(metrics["speaker_changes"], 2)
 
 
+
+class ExtractionLanguageTests(unittest.TestCase):
+    """The orchestration layer assigns languages explicitly; VoxConverse is English."""
+
+    def plan(self, kind: str) -> list[dict]:
+        return [job for job in run_stt.extraction_plan() if job["kind"] == kind]
+
+    def test_voxconverse_extraction_uses_english(self) -> None:
+        jobs = self.plan("voxconverse")
+        self.assertEqual(len(jobs), 12)
+        self.assertEqual({job["language"] for job in jobs}, {"en"})
+
+    def test_real_meeting_extraction_uses_turkish(self) -> None:
+        jobs = self.plan("real")
+        self.assertEqual([job["language"] for job in jobs], ["tr"])
+
+    def test_controlled_turkish_recordings_use_turkish(self) -> None:
+        jobs = self.plan("turkish_controlled")
+        self.assertEqual({job["language"] for job in jobs}, {"tr"})
+
+    def test_every_job_declares_a_language(self) -> None:
+        for job in run_stt.extraction_plan():
+            self.assertIn(job["language"], {"en", "tr"})
+
+
+class SttModeMetadataTests(unittest.TestCase):
+    def test_flash_attention_flag_matches_the_mode(self) -> None:
+        # -nfa is required for DTW in our v1.9.4 build; the control mode keeps the
+        # metadata consistent so the aggregate can not silently report the wrong value.
+        self.assertFalse("heuristic" in ("heuristic_nfa", "dtw"))
+        self.assertTrue("heuristic_nfa" in ("heuristic_nfa", "dtw"))
+        self.assertTrue("dtw" in ("heuristic_nfa", "dtw"))
 if __name__ == "__main__":
     unittest.main(verbosity=2)

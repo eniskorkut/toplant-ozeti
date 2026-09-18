@@ -15,9 +15,15 @@ import argparse
 import json
 import subprocess
 import time
+import wave
 from pathlib import Path
 
 OUT_PREFIX = "/tmp/overlap_stt"
+
+
+def audio_duration_seconds(path: str) -> float:
+    with wave.open(path, "rb") as wav_file:
+        return round(wav_file.getnframes() / wav_file.getframerate(), 3)
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -86,6 +92,11 @@ def run(args: argparse.Namespace) -> dict:
         del word["dtw_points"]
 
     text = " ".join(segment["text"].strip() for segment in payload.get("transcription", [])).strip()
+    # Safe, path-free description of the exact whisper invocation for this mode.
+    safe_command = [
+        token if token not in (args.audio, OUT_PREFIX) else f"<{'audio' if token == args.audio else 'tmp-output'}>"
+        for token in command
+    ]
     return {
         "timestamps": args.timestamps,
         "language": args.language,
@@ -93,8 +104,10 @@ def run(args: argparse.Namespace) -> dict:
         "text": text,
         "words": words,
         "word_count": len(words),
+        "audio_seconds": audio_duration_seconds(args.audio),
         "decoding_seconds": round(elapsed, 3),
         "flash_attention_disabled": args.timestamps in ("heuristic_nfa", "dtw"),
+        "command": safe_command,
     }
 
 

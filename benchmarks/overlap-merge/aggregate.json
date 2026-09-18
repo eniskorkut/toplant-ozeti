@@ -2,18 +2,18 @@
   "dtw_check": {
     "heuristic": {
       "words": 106,
-      "decoding_seconds": 14.776,
+      "decoding_seconds": 14.412,
       "flash_attention_disabled": false
     },
     "heuristic_nfa": {
       "words": 96,
-      "decoding_seconds": 15.875,
+      "decoding_seconds": 15.862,
       "flash_attention_disabled": true
     },
     "dtw": {
       "words": 96,
-      "decoding_seconds": 16.163,
-      "flash_attention_disabled": false
+      "decoding_seconds": 16.491,
+      "flash_attention_disabled": true
     },
     "text_identical_heuristic_vs_dtw": false,
     "text_identical_heuristic_vs_heuristic_nfa": false,
@@ -24,114 +24,228 @@
       "point_words": 27
     }
   },
+  "turkish_wer": {
+    "reference_words_per_recording": 84,
+    "modes": {
+      "T0": {
+        "timestamp_mode": "heuristic",
+        "per_recording": {
+          "sample_far": {
+            "wer": 0.1429,
+            "substitutions": 12,
+            "deletions": 0,
+            "insertions": 0,
+            "word_count": 84,
+            "rtf": 0.2967,
+            "point_words": 3,
+            "zero_duration_words": 3,
+            "monotonicity_errors": 0
+          },
+          "sample_near": {
+            "wer": 0.2024,
+            "substitutions": 11,
+            "deletions": 2,
+            "insertions": 4,
+            "word_count": 86,
+            "rtf": 0.317,
+            "point_words": 0,
+            "zero_duration_words": 0,
+            "monotonicity_errors": 0
+          }
+        },
+        "combined": {
+          "substitutions": 23,
+          "deletions": 2,
+          "insertions": 4,
+          "reference_words": 168,
+          "total_errors": 29,
+          "wer": 0.1726
+        }
+      },
+      "T0n": {
+        "timestamp_mode": "heuristic_nfa",
+        "per_recording": {
+          "sample_far": {
+            "wer": 0.1429,
+            "substitutions": 12,
+            "deletions": 0,
+            "insertions": 0,
+            "word_count": 84,
+            "rtf": 0.3296,
+            "point_words": 3,
+            "zero_duration_words": 3,
+            "monotonicity_errors": 0
+          },
+          "sample_near": {
+            "wer": 0.2024,
+            "substitutions": 11,
+            "deletions": 2,
+            "insertions": 4,
+            "word_count": 86,
+            "rtf": 0.3425,
+            "point_words": 0,
+            "zero_duration_words": 0,
+            "monotonicity_errors": 0
+          }
+        },
+        "combined": {
+          "substitutions": 23,
+          "deletions": 2,
+          "insertions": 4,
+          "reference_words": 168,
+          "total_errors": 29,
+          "wer": 0.1726
+        }
+      },
+      "T1": {
+        "timestamp_mode": "dtw",
+        "per_recording": {
+          "sample_far": {
+            "wer": 0.1429,
+            "substitutions": 12,
+            "deletions": 0,
+            "insertions": 0,
+            "word_count": 84,
+            "rtf": 0.3087,
+            "point_words": 18,
+            "zero_duration_words": 18,
+            "monotonicity_errors": 0
+          },
+          "sample_near": {
+            "wer": 0.2024,
+            "substitutions": 11,
+            "deletions": 2,
+            "insertions": 4,
+            "word_count": 86,
+            "rtf": 0.3472,
+            "point_words": 21,
+            "zero_duration_words": 21,
+            "monotonicity_errors": 0
+          }
+        },
+        "combined": {
+          "substitutions": 23,
+          "deletions": 2,
+          "insertions": 4,
+          "reference_words": 168,
+          "total_errors": 29,
+          "wer": 0.1726
+        }
+      }
+    },
+    "text_identical_t0n_vs_t1": {
+      "sample_far": true,
+      "sample_near": true
+    }
+  },
   "calibration": {
     "radius=0.25,margin=0.10": {
       "radius": 0.25,
       "margin": 0.1,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0204,
-      "newly_resolved_words": 8,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0033,
+      "newly_resolved_words": 4,
+      "compared_words": 899
     },
     "radius=0.25,margin=0.20": {
       "radius": 0.25,
       "margin": 0.2,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0204,
-      "newly_resolved_words": 8,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0033,
+      "newly_resolved_words": 4,
+      "compared_words": 899
     },
     "radius=0.25,margin=0.30": {
       "radius": 0.25,
       "margin": 0.3,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0204,
-      "newly_resolved_words": 8,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0033,
+      "newly_resolved_words": 4,
+      "compared_words": 899
     },
     "radius=0.50,margin=0.10": {
       "radius": 0.5,
       "margin": 0.1,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=0.50,margin=0.20": {
       "radius": 0.5,
       "margin": 0.2,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=0.50,margin=0.30": {
       "radius": 0.5,
       "margin": 0.3,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=0.75,margin=0.10": {
       "radius": 0.75,
       "margin": 0.1,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=0.75,margin=0.20": {
       "radius": 0.75,
       "margin": 0.2,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=0.75,margin=0.30": {
       "radius": 0.75,
       "margin": 0.3,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=1.00,margin=0.10": {
       "radius": 1.0,
       "margin": 0.1,
-      "agreement": 0.8713,
-      "wrong_attribution_rate": 0.1287,
-      "unresolved_rate": 0.0102,
-      "newly_resolved_words": 15,
-      "compared_words": 668
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=1.00,margin=0.20": {
       "radius": 1.0,
       "margin": 0.2,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     },
     "radius=1.00,margin=0.30": {
       "radius": 1.0,
       "margin": 0.3,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     }
   },
   "selection": {
@@ -139,45 +253,49 @@
     "config": {
       "radius": 0.5,
       "margin": 0.3,
-      "agreement": 0.8726,
-      "wrong_attribution_rate": 0.1274,
-      "unresolved_rate": 0.0117,
-      "newly_resolved_words": 14,
-      "compared_words": 667
+      "agreement": 0.931,
+      "wrong_attribution_rate": 0.069,
+      "unresolved_rate": 0.0022,
+      "newly_resolved_words": 5,
+      "compared_words": 899
     }
   },
   "validation": {
     "M0-heuristic": {
-      "agreement": 0.7911,
-      "wrong_attribution_rate": 0.2089,
-      "unresolved_words": 56,
-      "unresolved_rate": 0.0385,
-      "speaker_turns": 64,
-      "rapid_flips": 10
+      "total_stt_words": 1276,
+      "agreement": 0.7619,
+      "wrong_attribution_rate": 0.2381,
+      "unresolved_words": 48,
+      "unresolved_rate": 0.0376,
+      "speaker_turns": 62,
+      "rapid_flips": 6
     },
     "M0n-heuristic-nfa": {
-      "agreement": 0.7952,
-      "wrong_attribution_rate": 0.2048,
-      "unresolved_words": 45,
-      "unresolved_rate": 0.0418,
-      "speaker_turns": 55,
+      "total_stt_words": 1334,
+      "agreement": 0.7654,
+      "wrong_attribution_rate": 0.2346,
+      "unresolved_words": 105,
+      "unresolved_rate": 0.0787,
+      "speaker_turns": 62,
       "rapid_flips": 8
     },
     "M1-dtw": {
-      "agreement": 0.8991,
-      "wrong_attribution_rate": 0.1009,
-      "unresolved_words": 23,
-      "unresolved_rate": 0.0214,
-      "speaker_turns": 52,
-      "rapid_flips": 11
+      "total_stt_words": 1334,
+      "agreement": 0.7578,
+      "wrong_attribution_rate": 0.2422,
+      "unresolved_words": 72,
+      "unresolved_rate": 0.054,
+      "speaker_turns": 67,
+      "rapid_flips": 19
     },
     "M2-dtw-context": {
-      "agreement": 0.8937,
-      "wrong_attribution_rate": 0.1063,
-      "unresolved_words": 15,
-      "unresolved_rate": 0.0139,
-      "speaker_turns": 38,
-      "rapid_flips": 3
+      "total_stt_words": 1334,
+      "agreement": 0.7518,
+      "wrong_attribution_rate": 0.2482,
+      "unresolved_words": 57,
+      "unresolved_rate": 0.0427,
+      "speaker_turns": 42,
+      "rapid_flips": 2
     }
   },
   "real_meeting": {

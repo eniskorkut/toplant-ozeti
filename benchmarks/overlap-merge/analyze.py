@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/bench")
+sys.path.insert(0, "/stt-bench")
 
 from context_resolver import Segment, apply_resolver  # noqa: E402
 from evaluate import evaluate_assignment, parse_rttm, speaker_metrics  # noqa: E402
@@ -33,6 +34,8 @@ MEETINGS = Path("/data/meetings")
 CALIBRATION = ["qpylu", "fxgvy", "szsyz", "rtvuw", "gwtwd", "bwzyf"]
 VALIDATION = ["whmpa", "bkwns", "syiwe", "jiqvr", "jyirt", "wjhgf"]
 REAL_MEETING = "b1095740120b4b1e96db337da961ea63"
+TURKISH_CONTROLLED = ["sample_far", "sample_near"]
+WER_MODES = {"T0": "heuristic", "T0n": "heuristic_nfa", "T1": "dtw"}
 
 RADII = [0.25, 0.50, 0.75, 1.00]
 MARGINS = [0.10, 0.20, 0.30]
@@ -156,6 +159,7 @@ def main() -> int:
     PRIVATE.mkdir(parents=True, exist_ok=True)
     aggregate: dict = {
         "dtw_check": {},
+        "turkish_wer": {},
         "calibration": {},
         "selection": {},
         "validation": {},
@@ -254,8 +258,10 @@ def main() -> int:
         totals = {"compared": 0, "matching": 0, "wrong": 0, "unresolved": 0, "words": 0}
         turns = 0
         rapid = 0
+        stt_words = 0
         for file_id in VALIDATION:
-            words, _ = load_words(file_id, mode)
+            words, payload = load_words(file_id, mode)
+            stt_words += payload["word_count"]
             segments = diarization_segments(file_id, language="en")
             reference = parse_rttm(VOXCONVERSE / "voxconverse" / "dev" / f"{file_id}.rttm")
             baseline = baseline_speakers(words, segments)
@@ -274,6 +280,7 @@ def main() -> int:
             turns += metrics["turns"]
             rapid += metrics["rapid_flips"]
         aggregate["validation"][label] = {
+            "total_stt_words": stt_words,
             "agreement": round(totals["matching"] / totals["compared"], 4) if totals["compared"] else None,
             "wrong_attribution_rate": round(totals["wrong"] / totals["compared"], 4)
             if totals["compared"]
@@ -283,6 +290,54 @@ def main() -> int:
             "speaker_turns": turns,
             "rapid_flips": rapid,
         }
+
+    # --- controlled Turkish WER (T0 / T0n / T1) ---------------------------
+    log("controlled Turkish WER")
+    from normalize import score as wer_score
+
+    reference_text = Path("/stt-bench/reference_tr.txt").read_text(encoding="utf-8")
+    turkish: dict = {"reference_words_per_recording": len(reference_text.split()), "modes": {}}
+    for label, mode in WER_MODES.items():
+        per_recording = {}
+        totals = {"substitutions": 0, "deletions": 0, "insertions": 0, "reference_words": 0}
+        for recording in TURKISH_CONTROLLED:
+            words, payload = load_words(recording, mode)
+            result = wer_score(reference_text, payload["text"])
+            point_words = sum(1 for word in words if abs(word.end - word.start) < 1e-9)
+            monotonicity = sum(
+                1
+                for index in range(1, len(words))
+                if words[index].start < words[index - 1].end - 1e-9
+            )
+            per_recording[recording] = {
+                "wer": round(result["wer"], 4),
+                "substitutions": result["substitutions"],
+                "deletions": result["deletions"],
+                "insertions": result["insertions"],
+                "word_count": payload["word_count"],
+                "rtf": round(payload["decoding_seconds"] / payload["audio_seconds"], 4),
+                "point_words": point_words,
+                "zero_duration_words": point_words,
+                "monotonicity_errors": monotonicity,
+            }
+            for key in totals:
+                totals[key] += result[key]
+        combined_errors = totals["substitutions"] + totals["deletions"] + totals["insertions"]
+        turkish["modes"][label] = {
+            "timestamp_mode": mode,
+            "per_recording": per_recording,
+            "combined": {
+                **totals,
+                "total_errors": combined_errors,
+                "wer": round(combined_errors / totals["reference_words"], 4),
+            },
+        }
+    turkish["text_identical_t0n_vs_t1"] = {
+        recording: load_words(recording, "heuristic_nfa")[1]["text"]
+        == load_words(recording, "dtw")[1]["text"]
+        for recording in TURKISH_CONTROLLED
+    }
+    aggregate["turkish_wer"] = turkish
 
     # --- real four-speaker meeting ----------------------------------------
     log("real four-speaker meeting")

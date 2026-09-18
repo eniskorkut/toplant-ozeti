@@ -17,6 +17,14 @@ Production decoding flags are unchanged (large-v3-turbo Q8_0, `-l tr`, `-t 8`, `
 `-ojf`, no `-nt`); DTW only adds `-nfa` because our v1.9.4 build disables DTW when
 flash attention is on.
 
+## Language handling (fixed)
+
+Languages are declared explicitly by the orchestration layer (`run_stt.py`): VoxConverse
+is **en**, the private meeting and the two controlled recordings are **tr**. The
+low-level runner never infers language from filenames. An earlier harness version forced
+`tr` everywhere, which invalidated the first English results (the "DTW halves wrong
+attribution" finding was an artifact of that bug).
+
 ## Findings that shaped the harness
 
 - `-dtw large.v3.turbo` **is supported** in our v1.9.4 build (`examples/cli/cli.cpp`
@@ -62,6 +70,17 @@ cd benchmarks/overlap-merge && docker compose -f ../../compose.yaml run --rm \
     backend uv run --locked python /bench/analyze.py
 python3 benchmarks/overlap-merge/tests/test_overlap_merge.py
 ```
+
+## Results (corrected English inputs)
+
+Held-out VoxConverse validation: M0 heuristic agreement 0.7619 / wrong 0.2381, M0n
+0.7654 / 0.2346, M1 DTW 0.7578 / 0.2422 with rapid flips 19 (vs 6), M2 0.7518 / 0.2482.
+DTW therefore does **not** improve English speaker attribution and M2 stays rejected.
+
+Controlled Turkish WER (T0 / T0n / T1): identical text and WER on both recordings
+(near 0.2024, far 0.1429, combined 0.1726), confirming that DTW itself does not change
+decoding; `-nfa` costs ~5-10 % RTF. The private meeting's text does change under `-nfa`
+(106 → 96 words), so the flash-attention effect is data dependent.
 
 Committed: `aggregate.json` (metrics only, no transcript text), harness, tests, README.
 Git-ignored: `results/` (raw STT outputs, private transcripts, attribution diff).
