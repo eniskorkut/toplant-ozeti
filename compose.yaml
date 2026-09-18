@@ -22,6 +22,9 @@ services:
       # app/config.py point at these exact container paths.
       - ./benchmarks/stt/.cache/whisper-cpp:/models/whisper:ro
       - ./benchmarks/diarization/models:/models/diarization:ro
+    env_file:
+      - path: ./.env.local
+        required: false
     environment:
       MEETING_DATA_DIR: /data/meetings
       MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
@@ -31,11 +34,6 @@ services:
       MEETING_LLM_MODEL: ${MEETING_LLM_MODEL:-}
       MEETING_LLM_MAX_TRANSCRIPT_CHARS: ${MEETING_LLM_MAX_TRANSCRIPT_CHARS:-120000}
       MEETING_TRANSCRIPTION_PROVIDER: ${MEETING_TRANSCRIPTION_PROVIDER:-local}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-      ELEVENLABS_STT_MODEL: ${ELEVENLABS_STT_MODEL:-scribe_v2}
-      ELEVENLABS_LANGUAGE_CODE: ${ELEVENLABS_LANGUAGE_CODE:-tur}
-      ELEVENLABS_TIMEOUT_SECONDS: ${ELEVENLABS_TIMEOUT_SECONDS:-120}
-      ELEVENLABS_DIARIZATION_THRESHOLD: ${ELEVENLABS_DIARIZATION_THRESHOLD:-}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 5s
@@ -56,6 +54,9 @@ services:
       - ./data:/data
       - ./benchmarks/stt/.cache/whisper-cpp:/models/whisper:ro
       - ./benchmarks/diarization/models:/models/diarization:ro
+    env_file:
+      - path: ./.env.local
+        required: false
     environment:
       MEETING_DATA_DIR: /data/meetings
       MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
@@ -65,11 +66,6 @@ services:
       MEETING_LLM_MODEL: ${MEETING_LLM_MODEL:-}
       MEETING_LLM_MAX_TRANSCRIPT_CHARS: ${MEETING_LLM_MAX_TRANSCRIPT_CHARS:-120000}
       MEETING_TRANSCRIPTION_PROVIDER: ${MEETING_TRANSCRIPTION_PROVIDER:-local}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-      ELEVENLABS_STT_MODEL: ${ELEVENLABS_STT_MODEL:-scribe_v2}
-      ELEVENLABS_LANGUAGE_CODE: ${ELEVENLABS_LANGUAGE_CODE:-tur}
-      ELEVENLABS_TIMEOUT_SECONDS: ${ELEVENLABS_TIMEOUT_SECONDS:-120}
-      ELEVENLABS_DIARIZATION_THRESHOLD: ${ELEVENLABS_DIARIZATION_THRESHOLD:-}
     depends_on:
       backend:
         condition: service_healthy

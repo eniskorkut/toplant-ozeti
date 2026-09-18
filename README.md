@@ -255,6 +255,11 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   (`requested_transcription_provider` vs `transcription_provider`/`transcription_model`).
 - Failed meetings can be retried explicitly with the local provider from the meeting
   detail page; there is no automatic fallback.
+- **Local development secrets:** create a git-ignored repo-root `.env.local` (e.g.
+  `ELEVENLABS_API_KEY=...`). Both the `backend` and `worker` compose services load it via
+  `env_file` with `required: false`, so the app works without it. Never put backend secrets
+  in `frontend/.env*` or in `NEXT_PUBLIC_*`; the frontend only learns availability from
+  `GET /api/v1/transcription/providers`.
 - **Usage/quota:** `GET /api/v1/transcription/providers/elevenlabs/usage` returns only
   provider-returned fields (tier, status, characters used/limit, exact remaining when both
   are present, reset time). It never estimates time from characters and never returns keys,
