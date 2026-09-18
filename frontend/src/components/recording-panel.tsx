@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AudioPlayer } from "@/components/audio-player";
 import {
   ApiError,
   getElevenLabsUsage,
@@ -21,6 +22,7 @@ import {
   type RecordingResult,
 } from "@/lib/audio-recorder";
 import { formatDuration, statusLabel } from "@/lib/format";
+import { ChevronDownIcon, MicIcon, StopIcon } from "@/lib/icons";
 
 type Status =
   | "idle"
@@ -48,6 +50,11 @@ const SPEAKER_OPTIONS = [
   "11",
   "12",
 ] as const;
+
+const PROVIDER_DESCRIPTIONS: Record<TranscriptionProviderId, string> = {
+  local: "Ses cihazınızdan dışarı gönderilmez.",
+  elevenlabs: "Daha hızlı ve daha yüksek transkripsiyon doğruluğu; ses ElevenLabs'a gönderilir.",
+};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -80,14 +87,66 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** Lightweight live level meter: reads the active stream, never records it. */
+function LevelMeter({ stream }: { stream: MediaStream | null }) {
+  const barRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!stream || typeof window === "undefined") return;
+    const AudioContextCtor =
+      window.AudioContext ??
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return;
+
+    const context = new AudioContextCtor();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.75;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+
+    let frame = 0;
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let peak = 0;
+      for (let index = 0; index < data.length; index += 1) {
+        const amplitude = Math.abs(data[index] - 128) / 128;
+        if (amplitude > peak) peak = amplitude;
+      }
+      if (barRef.current) {
+        barRef.current.style.transform = `scaleX(${Math.min(1, peak * 2.2)})`;
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      source.disconnect();
+      void context.close();
+    };
+  }, [stream]);
+
+  if (!stream) return null;
+
+  return (
+    <div aria-hidden="true" className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-500/15">
+      <span ref={barRef} className="block h-full origin-left scale-x-0 rounded-full bg-red-500/80" />
+    </div>
+  );
+}
+
 export function RecordingPanel() {
   const recorderRef = useRef<MeetingRecorder | null>(null);
   const previewUrlRef = useRef<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const startedAtRef = useRef(0);
 
   const [status, setStatus] = useState<Status>("idle");
   const [session, setSession] = useState<RecorderSession | null>(null);
   const [recording, setRecording] = useState<RecordingResult | null>(null);
+  const [levelStream, setLevelStream] = useState<MediaStream | null>(null);
   const [meetingId, setMeetingId] = useState<string | null>(null);
   const [uploadedBytes, setUploadedBytes] = useState<number | null>(null);
   const [uploadedDuration, setUploadedDuration] = useState<number | null>(null);
@@ -206,6 +265,7 @@ export function RecordingPanel() {
     setProcessingError(null);
     setRecording(null);
     setSession(null);
+    setLevelStream(null);
     setMeetingId(null);
     setUploadedBytes(null);
     setUploadedDuration(null);
@@ -219,6 +279,7 @@ export function RecordingPanel() {
       const startedSession = await recorder.start();
       startedAtRef.current = Date.now();
       setSession(startedSession);
+      setLevelStream(recorder.audioStream ?? null);
       setStatus("recording");
     } catch (startError) {
       recorder.dispose();
@@ -235,6 +296,7 @@ export function RecordingPanel() {
 
     try {
       const stopped = await recorder.stop();
+      setLevelStream(null);
       setRecording(stopped);
       setElapsedMs(stopped.durationMs);
 
@@ -252,6 +314,7 @@ export function RecordingPanel() {
       setUploadedDuration(uploaded.duration_seconds);
       setStatus("uploaded");
     } catch (stopError) {
+      setLevelStream(null);
       setError(
         stopError instanceof ApiError || stopError instanceof Error
           ? stopError.message
@@ -295,7 +358,7 @@ export function RecordingPanel() {
 
   return (
     <section aria-labelledby="recording" className="enter enter-2">
-      <div className="surface rounded-2xl p-4">
+      <div className="surface rounded-2xl p-4 sm:p-5">
         <h2
           id="recording"
           className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
@@ -303,31 +366,40 @@ export function RecordingPanel() {
           Toplantı Kaydı
         </h2>
 
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          {status === "recording" ? (
-            <>
-              <span className="inline-flex items-center gap-2 text-sm text-zinc-900 dark:text-zinc-100">
+        {status === "recording" ? (
+          <div className="mt-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-red-600 dark:text-red-400">
                 <span className="size-2 rounded-full bg-red-500" aria-hidden="true" />
                 Kayıt sürüyor
               </span>
-              <span className="font-mono text-sm text-zinc-600 tabular-nums dark:text-zinc-400">
+              <span className="font-mono text-3xl font-semibold tracking-tight tabular-nums text-zinc-900 dark:text-zinc-50">
                 {formatDuration(elapsedMs / 1000)}
               </span>
-              <button
-                type="button"
-                onClick={handleStop}
-                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] dark:bg-zinc-100 dark:text-zinc-900"
-              >
-                Kaydı Durdur
-              </button>
-            </>
-          ) : (
+            </div>
+
+            <LevelMeter stream={levelStream} />
+
+            <button
+              type="button"
+              onClick={handleStop}
+              className="inline-flex items-center gap-2.5 rounded-2xl bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              <StopIcon className="size-4" />
+              Kaydı Durdur
+            </button>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={handleStart}
               disabled={busy}
-              className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+              className="inline-flex items-center gap-3 rounded-2xl bg-zinc-900 py-2.5 pr-5 pl-2.5 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
             >
+              <span className="grid size-9 place-items-center rounded-xl bg-white/10 dark:bg-zinc-900/10">
+                <MicIcon className="size-5" />
+              </span>
               {status === "requesting"
                 ? "Mikrofon izni isteniyor…"
                 : status === "uploading"
@@ -336,8 +408,13 @@ export function RecordingPanel() {
                     ? "İşleniyor…"
                     : "Kaydı Başlat"}
             </button>
-          )}
-        </div>
+            {status === "idle" ? (
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                Kayıt bu cihazda tutulur; yüklemeyi siz başlatırsınız.
+              </span>
+            ) : null}
+          </div>
+        )}
 
         {status === "processing" ? (
           <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
@@ -349,7 +426,7 @@ export function RecordingPanel() {
         {error ? (
           <p
             role="alert"
-            className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+            className="mt-3 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
           >
             {error}
           </p>
@@ -358,33 +435,32 @@ export function RecordingPanel() {
         {processingError ? (
           <p
             role="alert"
-            className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+            className="mt-3 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
           >
             İşleme hatası: {processingError}
           </p>
         ) : null}
 
-        {session ? (
-          <dl className="mt-3 divide-y divide-zinc-950/5 border-t border-zinc-950/5 dark:divide-white/5 dark:border-white/10">
-            <MetadataRow label="Kayıt formatı" value={session.requestedMimeType ?? "tarayıcı varsayılanı"} />
-            <MetadataRow label="İstenen bit hızı" value={formatBitrate(session.requestedBitsPerSecond)} />
-            <MetadataRow label="Gerçek bit hızı" value={formatBitrate(session.actualBitsPerSecond)} />
-          </dl>
-        ) : null}
-
-        {recording && previewUrl ? (
-          <div className="mt-3">
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">Kayıt önizlemesi</p>
-            <audio className="mt-1 w-full" controls src={previewUrl} />
-          </div>
-        ) : null}
-
         {status === "uploaded" && meetingId ? (
-          <div className="mt-4 space-y-3">
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="mt-5 space-y-5">
+            <div className="rounded-xl bg-zinc-500/5 p-3">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">Kayıt süresi</span>
+                <span className="font-mono text-sm tabular-nums text-zinc-900 dark:text-zinc-100">
+                  {formatDuration(uploadedDuration)}
+                </span>
+              </div>
+              {recording && previewUrl ? (
+                <div className="mt-2.5">
+                  <AudioPlayer audioRef={previewAudioRef} src={previewUrl} label="Kayıt önizlemesi" />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
               <label
                 htmlFor="speaker-count"
-                className="text-xs text-zinc-500 dark:text-zinc-400"
+                className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
               >
                 Konuşmacı sayısı
               </label>
@@ -394,7 +470,7 @@ export function RecordingPanel() {
                 onChange={(event) =>
                   setSpeakerChoice(event.target.value as (typeof SPEAKER_OPTIONS)[number])
                 }
-                className="rounded-lg border border-zinc-950/10 bg-transparent px-2 py-1.5 text-sm text-zinc-900 dark:border-white/15 dark:text-zinc-100"
+                className="w-full rounded-xl border border-zinc-950/10 bg-transparent px-3 py-2 text-sm text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 sm:w-40 dark:border-white/15 dark:text-zinc-100"
               >
                 <option value="auto">Otomatik</option>
                 {SPEAKER_OPTIONS.filter((option) => option !== "auto").map((option) => (
@@ -403,22 +479,14 @@ export function RecordingPanel() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={handleProcess}
-                disabled={providerChoice === "elevenlabs" && !cloudAcknowledged}
-                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-              >
-                Transkripsiyonu Başlat
-              </button>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Konuşmacı sayısı yalnızca kümeleme içindir; kişiler anonim olarak
+                etiketlenir (Kişi 1, Kişi 2, …).
+              </p>
             </div>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Konuşmacı sayısı yalnızca kümeleme içindir; kişiler anonim olarak
-              etiketlenir (Kişi 1, Kişi 2, …).
-            </p>
 
             <fieldset className="space-y-2">
-              <legend className="text-xs text-zinc-500 dark:text-zinc-400">
+              <legend className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Transkripsiyon yöntemi
               </legend>
               {providerOptions.map((option) => {
@@ -427,10 +495,10 @@ export function RecordingPanel() {
                 return (
                   <label
                     key={option.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${
+                    className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition-colors duration-150 ease-out has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-zinc-500 ${
                       selected
-                        ? "border-zinc-900 dark:border-zinc-100"
-                        : "border-zinc-950/10 dark:border-white/15"
+                        ? "border-zinc-900 bg-zinc-500/5 dark:border-zinc-100"
+                        : "border-zinc-950/10 hover:border-zinc-950/20 dark:border-white/15 dark:hover:border-white/25"
                     } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
                   >
                     <input
@@ -440,16 +508,14 @@ export function RecordingPanel() {
                       checked={selected}
                       disabled={unavailable}
                       onChange={() => setProviderChoice(option.id)}
-                      className="mt-1"
+                      className="mt-1 accent-zinc-900 dark:accent-zinc-100"
                     />
                     <span className="min-w-0">
-                      <span className="block text-sm text-zinc-900 dark:text-zinc-100">
+                      <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100">
                         {option.id === "local" ? "Yerel" : option.label}
                       </span>
                       <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                        {option.id === "local"
-                          ? "Ses kaydı yerel işlem hattında işlenir."
-                          : "Ses kaydı transkripsiyon için ElevenLabs hizmetine gönderilir."}
+                        {PROVIDER_DESCRIPTIONS[option.id]}
                       </span>
                       {unavailable ? (
                         <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
@@ -464,12 +530,12 @@ export function RecordingPanel() {
 
             {providerChoice === "elevenlabs" ? (
               <>
-                <label className="flex items-start gap-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                <label className="flex items-start gap-3 rounded-xl bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200">
                   <input
                     type="checkbox"
                     checked={cloudAcknowledged}
                     onChange={(event) => setCloudAcknowledged(event.target.checked)}
-                    className="mt-0.5"
+                    className="mt-0.5 accent-amber-600"
                   />
                   <span>
                     Ses kaydının transkripsiyon amacıyla ElevenLabs&apos;a gönderileceğini
@@ -480,7 +546,7 @@ export function RecordingPanel() {
                   Konuşmacı sayısı ElevenLabs için beklenen azami sayıdır; sonuçta daha az
                   konuşmacı tespit edilebilir.
                 </p>
-                <div className="rounded-lg bg-zinc-500/10 px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
+                <div className="rounded-xl bg-zinc-500/5 px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
                   {usage?.available ? (
                     <dl className="flex flex-wrap gap-x-4 gap-y-1">
                       {usage.tier ? <UsageItem label="Plan" value={usage.tier} /> : null}
@@ -509,20 +575,49 @@ export function RecordingPanel() {
                 </div>
               </>
             ) : null}
-            <dl className="divide-y divide-zinc-950/5 border-t border-zinc-950/5 dark:divide-white/5 dark:border-white/10">
-              {uploadedDuration != null ? (
-                <MetadataRow label="Kayıt süresi" value={formatDuration(uploadedDuration)} />
-              ) : null}
-              {uploadedBytes != null ? (
-                <MetadataRow label="Yüklenen boyut" value={formatBytes(uploadedBytes)} />
-              ) : null}
-              <MetadataRow label="Kayıt kimliği" value={meetingId} />
-            </dl>
+
+            <button
+              type="button"
+              onClick={handleProcess}
+              disabled={providerChoice === "elevenlabs" && !cloudAcknowledged}
+              className="inline-flex w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 py-3 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              Transkripsiyonu Başlat
+            </button>
+
+            <details className="group border-t border-zinc-950/5 pt-3 dark:border-white/10">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-zinc-500 transition-colors duration-150 ease-out hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+                <ChevronDownIcon className="size-3.5 transition-transform duration-150 ease-out group-open:rotate-180" />
+                Teknik ayrıntılar
+              </summary>
+              <dl className="mt-2 divide-y divide-zinc-950/5 dark:divide-white/5">
+                {session ? (
+                  <>
+                    <MetadataRow
+                      label="Kayıt formatı"
+                      value={session.requestedMimeType ?? "tarayıcı varsayılanı"}
+                    />
+                    <MetadataRow
+                      label="İstenen bit hızı"
+                      value={formatBitrate(session.requestedBitsPerSecond)}
+                    />
+                    <MetadataRow
+                      label="Gerçek bit hızı"
+                      value={formatBitrate(session.actualBitsPerSecond)}
+                    />
+                  </>
+                ) : null}
+                {uploadedBytes != null ? (
+                  <MetadataRow label="Yüklenen boyut" value={formatBytes(uploadedBytes)} />
+                ) : null}
+                <MetadataRow label="Toplantı kimliği" value={meetingId} />
+              </dl>
+            </details>
           </div>
         ) : null}
 
         {status === "completed" && meetingId ? (
-          <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-3">
+          <div className="mt-4 rounded-xl bg-emerald-500/10 px-3 py-3">
             <p className="text-sm text-emerald-800 dark:text-emerald-300">
               Transkripsiyon tamamlandı.
             </p>

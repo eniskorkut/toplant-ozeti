@@ -314,7 +314,7 @@ describe("RecordingPanel provider selection", () => {
     expect(getTranscriptionProviders).toHaveBeenCalled();
     const local = screen.getByRole("radio", { name: /Yerel/ });
     expect(local).toBeChecked();
-    expect(screen.getByText("Ses kaydı yerel işlem hattında işlenir.")).toBeTruthy();
+    expect(screen.getByText("Ses cihazınızdan dışarı gönderilmez.")).toBeTruthy();
   });
 
   it("disables ElevenLabs and shows the safe message when unavailable", async () => {

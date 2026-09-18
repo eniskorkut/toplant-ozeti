@@ -13,14 +13,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Meeting Intelligence",
-  description: "Local-first meeting transcription",
+  title: "Toplantılar · Meeting Intelligence",
+  description: "Toplantı kaydı, konuşmacı ayrımı ve transkript — yerel veya ElevenLabs.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
+      lang="tr"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>

@@ -112,6 +112,35 @@ describe("MeetingDetail", () => {
     expect(texts.some((text) => text.includes("Bilinmeyen"))).toBe(true);
   });
 
+  it("shows a human header with the raw id only as secondary metadata", async () => {
+    render(<MeetingDetail meetingId="m1" />);
+
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent(/Toplantı ·/);
+    expect(heading.textContent).not.toContain("m1");
+    expect(screen.getByRole("button", { name: "Toplantı kimliğini kopyala" })).toBeTruthy();
+    expect(screen.getByTitle("m1")).toBeTruthy();
+  });
+
+  it("renders one speaker badge per speaker change but keeps every turn labelled", async () => {
+    getTranscript.mockResolvedValue({
+      ...TRANSCRIPT,
+      turns: [
+        { ordinal: 0, speaker: "Kişi 1", start_seconds: 0, end_seconds: 4, text: "Merhaba" },
+        { ordinal: 1, speaker: "Kişi 1", start_seconds: 4, end_seconds: 7, text: "devam" },
+      ],
+      unresolved_turns: 0,
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("devam");
+
+    expect(screen.getAllByText("Kişi 1")).toHaveLength(2); // visible badge + sr-only repeat
+    const items = screen.getAllByRole("listitem");
+    expect(items[0].textContent).toContain("Kişi 1");
+    expect(items[1].textContent).toContain("Kişi 1");
+  });
+
   it("seeks the audio player when a transcript timestamp is clicked", async () => {
     render(<MeetingDetail meetingId="m1" />);
     await screen.findByText("Tamam");

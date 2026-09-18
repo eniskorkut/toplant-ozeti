@@ -43,6 +43,36 @@ export function formatDateTime(isoTimestamp: string): string {
   });
 }
 
+/** Human detail header, e.g. "18 Eylül 2026, 20:03". */
+export function formatMeetingDate(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  if (Number.isNaN(date.getTime())) {
+    return isoTimestamp;
+  }
+  return date.toLocaleString("tr-TR", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** Compact history row label, e.g. "18 Eyl 2026, 20:03". */
+export function formatMeetingDateShort(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  if (Number.isNaN(date.getTime())) {
+    return isoTimestamp;
+  }
+  return date.toLocaleString("tr-TR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export const STATUS_LABELS: Record<string, string> = {
   uploaded: "Yüklendi",
   queued: "Sırada",

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AudioPlayer } from "@/components/audio-player";
+import { Chip, StatusChip } from "@/components/chips";
 import {
   ApiError,
   getAnalysis,
@@ -14,7 +16,8 @@ import {
   type MeetingStatus,
   type Transcript,
 } from "@/lib/api";
-import { formatDuration, formatTimestamp, statusLabel } from "@/lib/format";
+import { formatDuration, formatMeetingDate, formatTimestamp, statusLabel } from "@/lib/format";
+import { CheckIcon, CopyIcon } from "@/lib/icons";
 
 const POLL_INTERVAL_MS = 2000;
 const PROVIDER_BADGES: Record<string, string> = {
@@ -24,6 +27,21 @@ const PROVIDER_BADGES: Record<string, string> = {
 
 const ANALYSIS_UNAVAILABLE_MESSAGE =
   "Toplantı analizi için uygun bir LLM sağlayıcısı yapılandırılmamış.";
+
+const SPEAKER_TONES = [
+  "bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  "bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  "bg-teal-500/10 text-teal-700 dark:text-teal-300",
+  "bg-amber-500/10 text-amber-800 dark:text-amber-300",
+  "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+  "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
+];
+
+function speakerTone(speaker: string, transcript: Transcript): string {
+  const index = transcript.speakers.indexOf(speaker);
+  if (index < 0) return "";
+  return SPEAKER_TONES[index % SPEAKER_TONES.length];
+}
 
 function TimestampButton({
   seconds,
@@ -38,7 +56,7 @@ function TimestampButton({
     <button
       type="button"
       onClick={() => onSeek(seconds)}
-      className="rounded font-mono text-xs text-sky-700 underline decoration-dotted underline-offset-4 tabular-nums hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-200"
+      className="shrink-0 rounded font-mono text-xs text-sky-700 underline decoration-dotted underline-offset-4 tabular-nums transition-colors duration-150 ease-out hover:text-sky-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:text-sky-400 dark:hover:text-sky-200"
       aria-label={label ?? `Sesi ${formatTimestamp(seconds)} konumuna getir`}
     >
       {formatTimestamp(seconds)}
@@ -54,6 +72,50 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h3>
       <div className="mt-2">{children}</div>
     </section>
+  );
+}
+
+function MeetingIdRow({ meetingId }: { meetingId: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), []);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(meetingId);
+      setCopied(true);
+      window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be unavailable (permissions or insecure context).
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1 rounded-xl bg-zinc-500/5 py-1.5 pr-1 pl-2.5">
+      <span
+        className="max-w-[9rem] truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400"
+        title={meetingId}
+      >
+        {meetingId}
+      </span>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label="Toplantı kimliğini kopyala"
+        className="grid size-6 place-items-center rounded-lg text-zinc-500 transition-colors duration-150 ease-out hover:bg-zinc-500/10 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:text-zinc-400 dark:hover:text-zinc-100"
+      >
+        {copied ? (
+          <CheckIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <CopyIcon className="size-3.5" />
+        )}
+      </button>
+      <span role="status" aria-live="polite" className="sr-only">
+        {copied ? "Kimlik kopyalandı." : ""}
+      </span>
+    </div>
   );
 }
 
@@ -204,7 +266,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
 
   if (loadError || !meeting) {
     return (
-      <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+      <p role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-400">
         {loadError ?? "Toplantı bulunamadı."}
       </p>
     );
@@ -217,67 +279,65 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
     : null;
 
   return (
-    <div className="space-y-6">
-      <header className="surface rounded-2xl p-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            Toplantı {meeting.meeting_id}
-          </h1>
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            {providerBadge ? (
-              <span className="mr-2 rounded-full bg-zinc-500/10 px-2 py-0.5 text-zinc-700 dark:text-zinc-300">
-                {providerBadge}
-              </span>
-            ) : null}
-            Durum: {statusLabel(meeting.status)}
-            {meeting.duration_seconds != null
-              ? ` · ${formatDuration(meeting.duration_seconds)}`
-              : ""}
-          </span>
+    <div className="space-y-5 sm:space-y-6">
+      <header className="surface rounded-2xl p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Toplantı · {formatMeetingDate(meeting.created_at)}
+            </h1>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {providerBadge ? <Chip>{providerBadge}</Chip> : null}
+              <StatusChip status={meeting.status} label={statusLabel(meeting.status)} />
+              <Chip>{formatDuration(meeting.duration_seconds)}</Chip>
+              {meeting.requested_speaker_count ? (
+                <Chip>{meeting.requested_speaker_count} konuşmacı</Chip>
+              ) : null}
+            </div>
+          </div>
+          <MeetingIdRow meetingId={meeting.meeting_id} />
         </div>
 
         {isProcessing ? (
-          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
             Ses yazıya dönüştürülüyor ve konuşmacılar ayrılıyor.
           </p>
         ) : null}
 
         {meeting.status === "failed" ? (
-          <div className="mt-2 space-y-2">
+          <div className="mt-3 space-y-3">
             <p
               role="alert"
-              className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+              className="rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
             >
               İşleme hatası: {meeting.processing_error ?? "bilinmeyen hata"}
             </p>
-            <button
-              type="button"
-              onClick={handleRetryWithLocal}
-              disabled={retrying}
-              className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-            >
-              {retrying ? "Kuyruğa alınıyor…" : "Yerel ile yeniden dene"}
-            </button>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Yeniden deneme, kaydı yerel işlem hattında işler.
-            </p>
+            <div>
+              <button
+                type="button"
+                onClick={handleRetryWithLocal}
+                disabled={retrying}
+                className="inline-flex items-center rounded-xl bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              >
+                {retrying ? "Kuyruğa alınıyor…" : "Yerel ile yeniden dene"}
+              </button>
+              <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Yeniden deneme, kaydı yerel işlem hattında işler.
+              </p>
+            </div>
           </div>
         ) : null}
 
         {meeting.status === "completed" ? (
-          <audio
-            ref={audioRef}
-            className="mt-3 w-full"
-            controls
-            preload="metadata"
-            src={meetingAudioUrl(meetingId)}
-          />
+          <div className="mt-3">
+            <AudioPlayer audioRef={audioRef} src={meetingAudioUrl(meetingId)} />
+          </div>
         ) : null}
       </header>
 
       {meeting.status === "completed" && transcript ? (
-        <section aria-labelledby="transcript" className="surface rounded-2xl p-4">
-          <div className="flex items-baseline justify-between gap-4">
+        <section aria-labelledby="transcript" className="surface rounded-2xl p-4 sm:p-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <h2
               id="transcript"
               className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
@@ -289,26 +349,47 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             </span>
           </div>
 
-          <ol className="mt-3 space-y-3">
-            {transcript.turns.map((turn) => (
-              <li key={turn.ordinal} className="flex gap-3">
-                <TimestampButton seconds={turn.start_seconds} onSeek={seekTo} />
-                <span className="min-w-0 flex-1">
-                  <span
-                    className={
-                      turn.speaker === transcript.unresolved_label
-                        ? "block text-xs text-zinc-400 italic dark:text-zinc-500"
-                        : "block text-xs font-medium text-zinc-700 dark:text-zinc-300"
-                    }
-                  >
-                    {turn.speaker}
-                  </span>
-                  <span className="mt-0.5 block text-sm text-zinc-900 dark:text-zinc-100">
-                    {turn.text}
-                  </span>
-                </span>
-              </li>
-            ))}
+          <ol className="mt-3 space-y-0.5">
+            {transcript.turns.map((turn, index) => {
+              const previousSpeaker = index > 0 ? transcript.turns[index - 1].speaker : null;
+              const showSpeaker = turn.speaker !== previousSpeaker;
+              const unresolved = turn.speaker === transcript.unresolved_label;
+              return (
+                <li
+                  key={turn.ordinal}
+                  className="flex gap-3 rounded-xl px-2 py-2 transition-colors duration-150 ease-out hover:bg-zinc-500/5"
+                >
+                  <TimestampButton
+                    seconds={turn.start_seconds}
+                    onSeek={seekTo}
+                    // Keeps screen readers able to move between turns.
+                  />
+                  <div className="min-w-0 flex-1">
+                    {showSpeaker ? (
+                      unresolved ? (
+                        <span className="text-[11px] text-zinc-400 italic dark:text-zinc-500">
+                          {turn.speaker}
+                        </span>
+                      ) : (
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${speakerTone(
+                            turn.speaker,
+                            transcript,
+                          )}`}
+                        >
+                          {turn.speaker}
+                        </span>
+                      )
+                    ) : (
+                      <span className="sr-only">{turn.speaker}</span>
+                    )}
+                    <p className="mt-1 text-sm leading-relaxed text-zinc-900 dark:text-zinc-100">
+                      {turn.text}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
           </ol>
 
           {transcript.unresolved_turns > 0 ? (
@@ -321,7 +402,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
       ) : null}
 
       {meeting.status === "completed" ? (
-        <section aria-labelledby="analysis" className="surface rounded-2xl p-4">
+        <section aria-labelledby="analysis" className="surface rounded-2xl p-4 sm:p-5">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <h2
               id="analysis"
@@ -329,27 +410,18 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             >
               Toplantı analizi
             </h2>
-            {!analysis || analysis.status === "failed" ? (
-              <button
-                type="button"
-                onClick={handleAnalyze}
-                disabled={analysisBusy}
-                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-              >
-                {analysisBusy ? "Başlatılıyor…" : "Toplantıyı Analiz Et"}
-              </button>
-            ) : (
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                {statusLabel(analysis.status)}
-                {analysis.provider ? ` · ${analysis.provider}` : ""}
-              </span>
-            )}
+            {analysis && analysis.status !== "failed" ? (
+              <StatusChip
+                status={analysis.status}
+                label={`${statusLabel(analysis.status)}${analysis.provider ? ` · ${analysis.provider}` : ""}`}
+              />
+            ) : null}
           </div>
 
           {analysisError ? (
             <p
               role="status"
-              className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+              className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
             >
               {analysisError}
             </p>
@@ -358,10 +430,26 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
           {analysis?.analysis_error ? (
             <p
               role="alert"
-              className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+              className="mt-3 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
             >
               Analiz hatası: {analysis.analysis_error}
             </p>
+          ) : null}
+
+          {!analysis || analysis.status === "failed" ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-zinc-500/5 px-3 py-3">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Özet, kararlar, aksiyonlar ve önemli anlar için toplantıyı analiz edin.
+              </p>
+              <button
+                type="button"
+                onClick={handleAnalyze}
+                disabled={analysisBusy}
+                className="inline-flex items-center rounded-xl border border-zinc-950/10 px-3.5 py-2 text-sm font-medium text-zinc-900 transition-colors duration-150 ease-out hover:bg-zinc-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/15 dark:text-zinc-100"
+              >
+                {analysisBusy ? "Başlatılıyor…" : "Toplantıyı Analiz Et"}
+              </button>
+            </div>
           ) : null}
 
           {analysis && (analysis.status === "queued" || analysis.status === "processing") ? (
@@ -374,7 +462,9 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             <>
               {analysis.summary ? (
                 <Section title="Özet">
-                  <p className="text-sm text-zinc-900 dark:text-zinc-100">{analysis.summary}</p>
+                  <p className="text-sm leading-relaxed text-zinc-900 dark:text-zinc-100">
+                    {analysis.summary}
+                  </p>
                 </Section>
               ) : null}
 
@@ -382,11 +472,8 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
                 <Section title="Konular">
                   <ul className="flex flex-wrap gap-2">
                     {analysis.topics.map((topic) => (
-                      <li
-                        key={topic}
-                        className="rounded-full bg-zinc-500/10 px-2.5 py-1 text-xs text-zinc-700 dark:text-zinc-300"
-                      >
-                        {topic}
+                      <li key={topic}>
+                        <Chip>{topic}</Chip>
                       </li>
                     ))}
                   </ul>

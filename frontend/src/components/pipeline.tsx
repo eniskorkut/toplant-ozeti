@@ -1,43 +1,26 @@
 type Step = {
   name: string;
   detail: string;
-  status: "implemented" | "planned";
 };
 
 const browserSteps: Step[] = [
-  { name: "Microphone", detail: "MediaDevices.getUserMedia", status: "implemented" },
-  { name: "MediaRecorder", detail: "browser audio encoding, 1s chunks", status: "implemented" },
-  { name: "Audio upload", detail: "multipart upload to the API", status: "implemented" },
+  { name: "Mikrofon", detail: "MediaDevices.getUserMedia" },
+  { name: "MediaRecorder", detail: "tarayıcıda ses kodlama, 1 sn'lik parçalar" },
+  { name: "Ses yükleme", detail: "API'ye multipart yükleme" },
 ];
 
 const backendSteps: Step[] = [
-  { name: "FastAPI", detail: "service + POST /api/recordings", status: "implemented" },
-  { name: "ffmpeg", detail: "single-pass conversion to MP3 + WAV", status: "implemented" },
-  { name: "whisper.cpp", detail: "CPU speech-to-text", status: "planned" },
-  { name: "sherpa-onnx", detail: "CPU speaker diarization", status: "planned" },
-  { name: "Speaker-labelled transcript", detail: "merged output", status: "planned" },
-  { name: "External LLM", detail: "OpenAI-compatible analysis API", status: "planned" },
+  { name: "FastAPI", detail: "servis + POST /api/recordings" },
+  { name: "ffmpeg", detail: "MP3 + WAV dönüşümü (tek geçiş)" },
+  { name: "whisper.cpp", detail: "yerel konuşma → metin" },
+  { name: "sherpa-onnx", detail: "yerel konuşmacı ayrımı" },
+  { name: "ElevenLabs Scribe v2", detail: "isteğe bağlı bulut transkripsiyonu" },
+  { name: "LLM analizi", detail: "yapılandırıldıysa özet, karar ve aksiyonlar" },
 ];
-
-function StatusChip({ status }: { status: Step["status"] }) {
-  if (status === "implemented") {
-    return (
-      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">
-        implemented
-      </span>
-    );
-  }
-
-  return (
-    <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-400">
-      planned
-    </span>
-  );
-}
 
 function StepList({ title, steps }: { title: string; steps: Step[] }) {
   return (
-    <div className="surface flex-1 rounded-2xl p-2">
+    <div className="flex-1 rounded-xl bg-zinc-500/5 p-2">
       <div className="px-3 pt-2 pb-1">
         <h3 className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100">
           {title}
@@ -61,7 +44,6 @@ function StepList({ title, steps }: { title: string; steps: Step[] }) {
                   {step.detail}
                 </span>
               </span>
-              <StatusChip status={step.status} />
             </span>
           </li>
         ))}
@@ -72,16 +54,16 @@ function StepList({ title, steps }: { title: string; steps: Step[] }) {
 
 export function Pipeline() {
   return (
-    <section aria-labelledby="pipeline" className="enter enter-4">
+    <section aria-labelledby="pipeline">
       <h2
         id="pipeline"
         className="mb-3 text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
       >
-        Pipeline
+        İşleyiş
       </h2>
       <div className="flex flex-col gap-4 sm:flex-row">
-        <StepList title="Browser" steps={browserSteps} />
-        <StepList title="Backend" steps={backendSteps} />
+        <StepList title="Tarayıcı" steps={browserSteps} />
+        <StepList title="Sunucu" steps={backendSteps} />
       </div>
     </section>
   );

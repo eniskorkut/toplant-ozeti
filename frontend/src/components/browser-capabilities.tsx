@@ -76,9 +76,9 @@ function StatusIcon({ status }: { status: Status }) {
 }
 
 const statusLabels: Record<Status, string> = {
-  checking: "Checking…",
-  ready: "Supported",
-  unavailable: "Unavailable",
+  checking: "Kontrol ediliyor…",
+  ready: "Destekleniyor",
+  unavailable: "Desteklenmiyor",
 };
 
 function statusFor(supported: boolean): Status {
@@ -111,7 +111,7 @@ export function BrowserCapabilities() {
 
   const rows: CapabilityRow[] = [
     {
-      label: "Microphone access",
+      label: "Mikrofon erişimi",
       detail: "navigator.mediaDevices.getUserMedia",
       status: capabilities ? statusFor(capabilities.getUserMedia) : "checking",
     },
@@ -121,25 +121,25 @@ export function BrowserCapabilities() {
       status: capabilities ? statusFor(capabilities.mediaRecorder) : "checking",
     },
     {
-      label: "Preferred format",
+      label: "Tercih edilen format",
       detail: capabilities?.supportedMimeType ?? RECORDING_MIME_CANDIDATES[0],
       status: capabilities ? statusFor(Boolean(capabilities.supportedMimeType)) : "checking",
     },
   ];
 
   return (
-    <section aria-labelledby="browser-capabilities" className="enter enter-3">
+    <section aria-labelledby="browser-capabilities">
       <div className="mb-3 flex items-baseline justify-between gap-4">
         <h2
           id="browser-capabilities"
           className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
         >
-          Browser capabilities
+          Tarayıcı desteği
         </h2>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">No permission requested</p>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">İzin istenmez</p>
       </div>
 
-      <div className="surface rounded-2xl p-2">
+      <div className="rounded-xl bg-zinc-500/5 p-2">
         <ul className="divide-y divide-zinc-950/5 dark:divide-white/5">
           {rows.map((row) => (
             <li key={row.label} className="flex items-center gap-3 px-3 py-2.5">

@@ -105,6 +105,11 @@ export class MeetingRecorder {
     return this.stream !== null || this.recorder !== null;
   }
 
+  /** Live microphone stream while recording; null otherwise. Read-only use. */
+  get audioStream(): MediaStream | null {
+    return this.stream;
+  }
+
   async start(): Promise<RecorderSession> {
     if (this.isActive) {
       throw new MicrophoneError("A recording is already in progress.");

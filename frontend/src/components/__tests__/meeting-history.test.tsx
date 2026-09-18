@@ -66,9 +66,10 @@ describe("MeetingHistory", () => {
     render(<MeetingHistory />);
 
     await screen.findAllByRole("listitem");
-    expect(screen.getByText(/Tamamlandı · Analiz: Tamamlandı/)).toBeTruthy();
-    expect(screen.getByText(/Başarısız/)).toBeTruthy();
-    expect(screen.getByText(/2 konuşmacı/)).toBeTruthy();
+    expect(screen.getByText("Tamamlandı")).toBeTruthy();
+    expect(screen.getByText("Analiz: Tamamlandı")).toBeTruthy();
+    expect(screen.getByText("Başarısız")).toBeTruthy();
+    expect(screen.getByText("2 konuşmacı")).toBeTruthy();
   });
 
   it("shows the provider badge and tolerates legacy null metadata", async () => {
