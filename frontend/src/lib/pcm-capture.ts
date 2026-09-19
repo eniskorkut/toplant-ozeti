@@ -74,14 +74,29 @@ export type PcmCaptureOptions = {
   onError?: (error: Error) => void;
 };
 
+export type PcmCaptureStats = {
+  chunks: number;
+  streamedSeconds: number;
+  /** Wall-clock gaps between emitted chunks (dev instrumentation only). */
+  averageIntervalMs: number | null;
+  maxIntervalMs: number | null;
+  gapCount: number;
+};
+
+const GAP_THRESHOLD_MS = 250;
+
 export class PcmCapture {
   private context: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private node: AudioWorkletNode | null = null;
-  private resampler: Resampler | null = null;
+  private resampler: Resampler = new Resampler(48_000, TARGET_SAMPLE_RATE);
   private pending: number[] = [];
   private emittedSamples = 0;
+  private emittedChunks = 0;
   private stopped = false;
+  private lastEmitAtMs: number | null = null;
+  private intervals: number[] = [];
+  private gapCount = 0;
 
   constructor(
     private readonly stream: MediaStream,
@@ -94,6 +109,40 @@ export class PcmCapture {
 
   get streamedSeconds(): number {
     return this.emittedSamples / TARGET_SAMPLE_RATE;
+  }
+
+  get stats(): PcmCaptureStats {
+    const intervals = this.intervals;
+    return {
+      chunks: this.emittedChunks,
+      streamedSeconds: this.emittedSamples / TARGET_SAMPLE_RATE,
+      averageIntervalMs:
+        intervals.length > 0
+          ? Math.round((intervals.reduce((sum, value) => sum + value, 0) / intervals.length) * 10) /
+            10
+          : null,
+      maxIntervalMs:
+        intervals.length > 0 ? Math.round(Math.max(...intervals) * 10) / 10 : null,
+      gapCount: this.gapCount,
+    };
+  }
+
+  /**
+   * Feed one AudioWorklet frame (native rate). Public so cadence can be verified
+   * without a real AudioContext; the worklet handler calls this too.
+   */
+  handleFrame(frame: Float32Array): void {
+    if (this.stopped) return;
+    try {
+      const resampled = this.resampler.push(frame);
+      if (resampled.length === 0) return;
+      for (let index = 0; index < resampled.length; index += 1) {
+        this.pending.push(resampled[index]);
+      }
+      this.flushCompletedChunks();
+    } catch (error) {
+      this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   async start(): Promise<number> {
@@ -121,22 +170,12 @@ export class PcmCapture {
     const node = new AudioWorkletNode(context, "pcm-capture");
     this.source = source;
     this.node = node;
-    const resampler = new Resampler(context.sampleRate, TARGET_SAMPLE_RATE);
-    this.resampler = resampler;
+    this.resampler = new Resampler(context.sampleRate, TARGET_SAMPLE_RATE);
 
     node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (this.stopped) return;
-      try {
-        const frame = event.data instanceof Float32Array ? event.data : new Float32Array();
-        const resampled = resampler.push(frame);
-        if (resampled.length === 0) return;
-        for (let index = 0; index < resampled.length; index += 1) {
-          this.pending.push(resampled[index]);
-        }
-        this.flushCompletedChunks();
-      } catch (error) {
-        this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
-      }
+      const frame = event.data instanceof Float32Array ? event.data : new Float32Array();
+      this.handleFrame(frame);
     };
 
     source.connect(node);
@@ -155,6 +194,16 @@ export class PcmCapture {
       const pcm = floatToInt16(slice);
       const startSeconds = this.emittedSamples / TARGET_SAMPLE_RATE;
       this.emittedSamples += pcm.length;
+      this.emittedChunks += 1;
+      const now = performance.now();
+      if (this.lastEmitAtMs !== null) {
+        const interval = now - this.lastEmitAtMs;
+        this.intervals.push(interval);
+        if (interval > GAP_THRESHOLD_MS) {
+          this.gapCount += 1;
+        }
+      }
+      this.lastEmitAtMs = now;
       this.options.onChunk(pcm.buffer as ArrayBuffer, startSeconds);
     }
   }
@@ -172,7 +221,6 @@ export class PcmCapture {
     this.node = null;
     this.source = null;
     this.context = null;
-    this.resampler = null;
     this.pending = [];
   }
 }

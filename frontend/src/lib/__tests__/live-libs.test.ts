@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { Resampler, floatToInt16 } from "@/lib/pcm-capture";
+import { PcmCapture, Resampler, floatToInt16 } from "@/lib/pcm-capture";
 import { RollingSpeakerTracker } from "@/lib/rolling-speaker";
 import {
   ScribeRealtimeClient,
@@ -129,9 +129,10 @@ describe("ScribeRealtimeClient", () => {
     return { client, partials, committed, statuses };
   }
 
-  it("connects, sends PCM chunks and parses partial/committed messages", () => {
+  it("connects, sends PCM chunks and parses partial/committed messages", async () => {
     const { client, partials, committed, statuses } = makeClient();
-    client.open("sutkn_x");
+    client.open(async () => "sutkn_x");
+    await vi.advanceTimersByTimeAsync(0);
     const socket = FakeWebSocket.instances[0];
     socket.emitOpen();
     expect(statuses).toEqual(["connecting", "connected"]);
@@ -158,29 +159,110 @@ describe("ScribeRealtimeClient", () => {
     });
   });
 
-  it("reconnects a bounded number of times, then reports failure", () => {
+  it("reconnects a bounded number of times, then reports failure", async () => {
     const { client, statuses } = makeClient();
-    client.open("sutkn_x");
+    client.open(async () => "sutkn_x");
+    await vi.advanceTimersByTimeAsync(0);
     FakeWebSocket.instances[0].emitOpen();
     FakeWebSocket.instances[0].emitClose();
 
-    vi.advanceTimersByTime(600);
+    await vi.advanceTimersByTimeAsync(600);
     expect(FakeWebSocket.instances).toHaveLength(2);
     FakeWebSocket.instances[1].emitClose();
-    vi.advanceTimersByTime(1200);
+    await vi.advanceTimersByTimeAsync(1200);
     expect(FakeWebSocket.instances).toHaveLength(3);
     FakeWebSocket.instances[2].emitClose();
-    vi.advanceTimersByTime(5000);
+    await vi.advanceTimersByTimeAsync(5000);
 
     expect(FakeWebSocket.instances).toHaveLength(3);
     expect(statuses[statuses.length - 1]).toBe("failed");
   });
 
-  it("never throws when sending without an open socket", () => {
+  it("requests a fresh single-use token for every connection attempt", async () => {
+    const tokens = ["sutkn_a", "sutkn_b", "sutkn_c"];
+    const getToken = vi.fn(async () => tokens[getToken.mock.calls.length - 1] ?? "sutkn_extra");
     const { client } = makeClient();
-    client.open("sutkn_x");
+
+    client.open(getToken);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url).toContain("token=sutkn_a");
+    FakeWebSocket.instances[0].emitOpen();
+
+    FakeWebSocket.instances[0].emitClose();
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1].url).toContain("token=sutkn_b");
+    expect(FakeWebSocket.instances[1].url).not.toContain("token=sutkn_a");
+  });
+
+  it("reconnects after more than the 15 minute token lifetime with a new token", async () => {
+    const tokens = ["sutkn_old", "sutkn_new"];
+    const getToken = vi.fn(async () => tokens[Math.min(getToken.mock.calls.length - 1, 1)]);
+    const { client, statuses } = makeClient();
+
+    client.open(getToken);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances[0].url).toContain("token=sutkn_old");
+    FakeWebSocket.instances[0].emitOpen();
+    expect(statuses).toContain("connected");
+
+    // Time passes beyond the token lifetime, then the socket fails.
+    await vi.advanceTimersByTimeAsync(16 * 60 * 1000);
+    FakeWebSocket.instances[0].emitClose();
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.instances[1].url).toContain("token=sutkn_new");
+    expect(FakeWebSocket.instances[1].url).not.toContain("token=sutkn_old");
+    FakeWebSocket.instances[1].emitOpen();
+    expect(statuses[statuses.length - 1]).toBe("connected");
+  });
+
+  it("never throws when sending without an open socket", async () => {
+    const { client } = makeClient();
+    client.open(async () => "sutkn_x");
+    await vi.advanceTimersByTimeAsync(0);
     FakeWebSocket.instances[0].readyState = 3;
     expect(() => client.sendAudio(new Int16Array([1]).buffer)).not.toThrow();
+  });
+});
+
+describe("PcmCapture cadence", () => {
+  it("emits ~100 ms chunks continuously at 48 kHz input", () => {
+    const chunks: { bytes: number; startSeconds: number }[] = [];
+    const capture = new PcmCapture({} as MediaStream, {
+      onChunk: (pcm, startSeconds) => chunks.push({ bytes: pcm.byteLength, startSeconds }),
+    });
+
+    // 1 second of 48 kHz audio in 128-sample AudioWorklet quanta.
+    for (let frame = 0; frame < 375; frame += 1) {
+      capture.handleFrame(new Float32Array(128));
+    }
+
+    expect(chunks.length).toBeGreaterThanOrEqual(9);
+    expect(chunks.length).toBeLessThanOrEqual(11);
+    expect(chunks[0].bytes).toBe(3200);
+    expect(chunks[1].startSeconds).toBeCloseTo(0.1, 3);
+    expect(capture.streamedSeconds).toBeGreaterThan(0.9);
+    const stats = capture.stats;
+    expect(stats.chunks).toBe(chunks.length);
+    expect(stats.gapCount).toBe(0);
+    expect(capture.stats.averageIntervalMs).not.toBeNull();
+  });
+
+  it("does not batch audio into multi-second payloads", () => {
+    const sizes: number[] = [];
+    const capture = new PcmCapture({} as MediaStream, {
+      onChunk: (pcm) => sizes.push(pcm.byteLength),
+    });
+    for (let frame = 0; frame < 375 * 3; frame += 1) {
+      capture.handleFrame(new Float32Array(128));
+    }
+    expect(Math.max(...sizes)).toBe(3200);
+    expect(sizes.length).toBeGreaterThan(25);
   });
 });
 

@@ -186,6 +186,17 @@ export function RecordingPanel() {
   const pcmRef = useRef<PcmCapture | null>(null);
   const trackerRef = useRef<RollingSpeakerTracker | null>(null);
   const lastRollingResultRef = useRef<SpeakerWindowResult | null>(null);
+  const captureStartedAtRef = useRef<number | null>(null);
+  const firstPcmAtRef = useRef<number | null>(null);
+  const wsConnectedAtRef = useRef<number | null>(null);
+  const firstPartialEventAtRef = useRef<number | null>(null);
+  const firstPartialRenderedAtRef = useRef<number | null>(null);
+  const pcmStatsRef = useRef<{
+    chunks: number;
+    averageIntervalMs: number | null;
+    maxIntervalMs: number | null;
+    gapCount: number;
+  } | null>(null);
   const lineIdRef = useRef(0);
   const lastAudioEndRef = useRef<number | null>(null);
   const partialSeenRef = useRef(false);
@@ -230,6 +241,14 @@ export function RecordingPanel() {
     label: number | null;
     rollingSeconds: number;
     requests: number;
+    firstPcmMs: number | null;
+    wsConnectedMs: number | null;
+    firstPartialVisibleMs: number | null;
+    partialEventToVisibleMs: number | null;
+    pcmChunks: number | null;
+    pcmAverageIntervalMs: number | null;
+    pcmMaxIntervalMs: number | null;
+    pcmGapCount: number | null;
   } | null>(null);
 
   const releasePreview = useCallback(() => {
@@ -353,8 +372,23 @@ export function RecordingPanel() {
     );
   }, [elapsedSeconds]);
 
+  const markPartialRendered = useCallback(() => {
+    if (firstPartialRenderedAtRef.current !== null) return;
+    const schedule =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (callback: FrameRequestCallback) =>
+            window.setTimeout(() => callback(performance.now()), 16);
+    schedule(() => {
+      if (firstPartialRenderedAtRef.current === null) {
+        firstPartialRenderedAtRef.current = performance.now();
+      }
+    });
+  }, []);
+
   const handlePartial = useCallback(
     (text: string) => {
+      markPartialRendered();
       const now = elapsedSeconds();
       if (!partialSeenRef.current && lastAudioEndRef.current !== null) {
         metricsRef.current.partial.push(Math.max(0, now - lastAudioEndRef.current));
@@ -379,7 +413,7 @@ export function RecordingPanel() {
         return next;
       });
     },
-    [elapsedSeconds],
+    [elapsedSeconds, markPartialRendered],
   );
 
   const handleCommitted = useCallback(
@@ -422,7 +456,6 @@ export function RecordingPanel() {
         const session = await createLiveSession();
         createdSessionId = session.live_session_id;
         setLiveSessionId(createdSessionId);
-        const { token } = await getRealtimeToken();
 
         const tracker = new RollingSpeakerTracker({
           liveSessionId: createdSessionId,
@@ -451,11 +484,22 @@ export function RecordingPanel() {
               );
             }
           },
+          onTimeline: (event, atMs) => {
+            if (event === "connected" && wsConnectedAtRef.current === null) {
+              wsConnectedAtRef.current = atMs;
+            }
+            if (event === "partial_event" && firstPartialEventAtRef.current === null) {
+              firstPartialEventAtRef.current = atMs;
+            }
+          },
         });
         scribeRef.current = scribe;
 
         const capture = new PcmCapture(stream, {
           onChunk: (pcm, startSeconds) => {
+            if (firstPcmAtRef.current === null) {
+              firstPcmAtRef.current = performance.now();
+            }
             scribe.sendAudio(pcm);
             trackerRef.current?.push(new Int16Array(pcm), startSeconds);
           },
@@ -464,8 +508,11 @@ export function RecordingPanel() {
           },
         });
         pcmRef.current = capture;
+        captureStartedAtRef.current = performance.now();
         await capture.start();
-        scribe.open(token);
+        // Every connection attempt (including reconnects) mints a fresh
+        // single-use token; consumed tokens are never reused.
+        scribe.open(async () => (await getRealtimeToken()).token);
       } catch {
         if (createdSessionId) {
           void deleteLiveSession(createdSessionId).catch(() => undefined);
@@ -479,6 +526,8 @@ export function RecordingPanel() {
 
   const stopLivePipeline = useCallback(() => {
     const tracker = trackerRef.current;
+    const captureStats = pcmRef.current?.stats ?? null;
+    if (captureStats) pcmStatsRef.current = captureStats;
     scribeRef.current?.commit();
     scribeRef.current?.close();
     scribeRef.current = null;
@@ -486,12 +535,31 @@ export function RecordingPanel() {
     pcmRef.current = null;
     tracker?.stop();
     if (tracker) {
+      const captureAt = captureStartedAtRef.current;
+      const relative = (value: number | null) =>
+        captureAt !== null && value !== null ? Math.max(0, value - captureAt) : null;
+      const stats = pcmStatsRef.current;
       setLiveMetrics({
         partial: median(metricsRef.current.partial),
         committed: median(metricsRef.current.committed),
         label: median(metricsRef.current.label),
         rollingSeconds: tracker.uploadedSeconds,
         requests: tracker.requestCount,
+        firstPcmMs: relative(firstPcmAtRef.current),
+        wsConnectedMs: relative(wsConnectedAtRef.current),
+        firstPartialVisibleMs: relative(firstPartialRenderedAtRef.current),
+        partialEventToVisibleMs:
+          firstPartialEventAtRef.current !== null &&
+          firstPartialRenderedAtRef.current !== null
+            ? Math.max(
+                0,
+                firstPartialRenderedAtRef.current - firstPartialEventAtRef.current,
+              )
+            : null,
+        pcmChunks: stats?.chunks ?? null,
+        pcmAverageIntervalMs: stats?.averageIntervalMs ?? null,
+        pcmMaxIntervalMs: stats?.maxIntervalMs ?? null,
+        pcmGapCount: stats?.gapCount ?? null,
       });
     }
     setRealtimeStatus("disconnected");
@@ -516,6 +584,12 @@ export function RecordingPanel() {
     lineIdRef.current = 0;
     lastAudioEndRef.current = null;
     partialSeenRef.current = false;
+    captureStartedAtRef.current = null;
+    firstPcmAtRef.current = null;
+    wsConnectedAtRef.current = null;
+    firstPartialEventAtRef.current = null;
+    firstPartialRenderedAtRef.current = null;
+    pcmStatsRef.current = null;
     metricsRef.current = { partial: [], committed: [], label: [] };
     releasePreview();
     setStatus("requesting");
@@ -979,6 +1053,50 @@ export function RecordingPanel() {
                 <MetadataRow label="Toplantı kimliği" value={meetingId} />
                 {liveMetrics ? (
                   <>
+                    <MetadataRow
+                      label="İlk PCM parçası (yakalamadan)"
+                      value={
+                        liveMetrics.firstPcmMs == null
+                          ? "—"
+                          : `${(liveMetrics.firstPcmMs / 1000).toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="WebSocket bağlantısı (yakalamadan)"
+                      value={
+                        liveMetrics.wsConnectedMs == null
+                          ? "—"
+                          : `${(liveMetrics.wsConnectedMs / 1000).toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="İlk kısmi metin görünür (yakalamadan)"
+                      value={
+                        liveMetrics.firstPartialVisibleMs == null
+                          ? "—"
+                          : `${(liveMetrics.firstPartialVisibleMs / 1000).toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="Kısmi olay → görünür"
+                      value={
+                        liveMetrics.partialEventToVisibleMs == null
+                          ? "—"
+                          : `${liveMetrics.partialEventToVisibleMs.toFixed(0)} ms`
+                      }
+                    />
+                    <MetadataRow
+                      label="PCM parçaları"
+                      value={
+                        liveMetrics.pcmChunks == null
+                          ? "—"
+                          : `${liveMetrics.pcmChunks} parça · ort. ${
+                              liveMetrics.pcmAverageIntervalMs?.toFixed(0) ?? "—"
+                            } ms · en uzun ${
+                              liveMetrics.pcmMaxIntervalMs?.toFixed(0) ?? "—"
+                            } ms · boşluk ${liveMetrics.pcmGapCount ?? 0}`
+                      }
+                    />
                     <MetadataRow
                       label="İlk kısmi metin gecikmesi (medyan)"
                       value={

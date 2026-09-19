@@ -33,7 +33,9 @@ AUDIO = Path("/data/meetings/8266cc18930b40e6a3740c48bc543705/processing.wav")
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
 WINDOW_SECONDS = 4.0
 OVERLAP_SECONDS = 1.0
-CHUNK_SECONDS = 1.0
+# Browser cadence: PcmCapture emits ~100 ms chunks (1600 samples at 16 kHz).
+CHUNK_SECONDS = 0.1
+PARTIAL_MIN_GAP_SECONDS = 1.0
 
 
 def read_pcm(path: Path) -> bytes:
@@ -81,6 +83,8 @@ def main() -> int:
 
         started = time.perf_counter()
         partial_delays: list[float] = []
+        partial_events: list[float] = []  # wall-clock elapsed per partial event
+        commits_info: list[dict] = []  # wall + word anchors per committed segment
         committed_delays: list[float] = []
         parts = 0
         commits = 0
@@ -118,8 +122,9 @@ def main() -> int:
                         elapsed = time.perf_counter() - started
                         if kind == "partial_transcript" and message.get("text"):
                             parts += 1
-                            # First partial of an utterance: measured from the end of
-                            # the previous committed speech (the closest known anchor).
+                            partial_events.append(elapsed)
+                            # Legacy anchor (previous committed speech end): kept for
+                            # before/after comparison with the earlier metric.
                             if awaiting_onset and last_word_end > 0:
                                 delay = elapsed - last_word_end
                                 if 0 <= delay <= 5.0:
@@ -129,8 +134,16 @@ def main() -> int:
                             commits += 1
                             words = message.get("words") or []
                             if words:
+                                own_start = float(words[0].get("start", 0.0))
                                 own_end = float(words[-1].get("end", 0.0))
                                 committed_delays.append(max(0.0, elapsed - own_end))
+                                commits_info.append(
+                                    {
+                                        "wall": elapsed,
+                                        "word_start": own_start,
+                                        "word_end": own_end,
+                                    }
+                                )
                                 words_seen += len(words)
                                 last_word_end = max(last_word_end, own_end)
                             awaiting_onset = True
@@ -183,10 +196,41 @@ def main() -> int:
             while time.perf_counter() < drain_until:
                 try:
                     message = json.loads(socket.recv(timeout=0.2))
-                    if message.get("message_type", "").startswith("committed_transcript"):
+                    kind = message.get("message_type", "")
+                    if kind.startswith("committed_transcript"):
                         commits += 1
+                        words = message.get("words") or []
+                        if words:
+                            commits_info.append(
+                                {
+                                    "wall": time.perf_counter() - started,
+                                    "word_start": float(words[0].get("start", 0.0)),
+                                    "word_end": float(words[-1].get("end", 0.0)),
+                                }
+                            )
+                    elif kind == "partial_transcript" and message.get("text"):
+                        parts += 1
+                        partial_events.append(time.perf_counter() - started)
                 except TimeoutError:
                     continue
+
+        # Fair partial metric: for each committed segment, the first partial event
+        # received after the previous commit is anchored at this segment's first
+        # word start (speech onset), not at the previous silence.
+        onset_delays: list[float] = []
+        for index, info in enumerate(commits_info):
+            window_start = commits_info[index - 1]["wall"] if index > 0 else 0.0
+            candidates = [
+                event
+                for event in partial_events
+                if window_start <= event <= info["wall"]
+            ]
+            if not candidates:
+                continue
+            onset_wall = info["word_start"]  # stream wall ~= audio timeline
+            delay = candidates[0] - onset_wall
+            if 0 <= delay <= 10.0:
+                onset_delays.append(delay)
 
         session_state = client.get(
             f"/api/v1/live-transcription/sessions/{live_session_id}"
@@ -220,6 +264,12 @@ def main() -> int:
                 "realtime_partial_events": parts,
                 "realtime_committed_events": commits,
                 "realtime_words_seen": words_seen,
+                "first_partial_at_s": round(partial_events[0], 3) if partial_events else None,
+                "first_partial_from_speech_onset_median_s": round(
+                    statistics.median(onset_delays), 3
+                )
+                if onset_delays
+                else None,
                 "first_partial_delay_median_s": round(statistics.median(partial_delays), 3)
                 if partial_delays
                 else None,
@@ -325,6 +375,8 @@ def main() -> int:
         "realtime_partial_events": parts,
         "realtime_committed_events": commits,
         "realtime_words_seen": words_seen,
+        "first_partial_at_s": round(partial_events[0], 3) if partial_events else None,
+        "first_partial_from_speech_onset_median_s": med(onset_delays),
         "first_partial_delay_median_s": med(partial_delays),
         "committed_text_delay_median_s": med(committed_delays),
         "speaker_label_delay_median_s": med(label_delays),

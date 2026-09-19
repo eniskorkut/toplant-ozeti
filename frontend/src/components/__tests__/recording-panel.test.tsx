@@ -42,7 +42,9 @@ const scribeCallbacks: Array<{
   onPartial: (text: string) => void;
   onCommitted: (text: string, words: unknown[]) => void;
   onStatus: (status: string) => void;
+  onTimeline?: (event: string, atMs: number) => void;
 }> = [];
+const scribeTokenProviders: Array<() => Promise<string>> = [];
 vi.mock("@/lib/scribe-realtime", () => ({
   ScribeRealtimeClient: class {
     private callbacks: (typeof scribeCallbacks)[number];
@@ -50,8 +52,10 @@ vi.mock("@/lib/scribe-realtime", () => ({
       this.callbacks = callbacks;
       scribeCallbacks.push(callbacks);
     }
-    open() {
+    open(getToken: () => Promise<string>) {
+      scribeTokenProviders.push(getToken);
       this.callbacks.onStatus("connected");
+      this.callbacks.onTimeline?.("connected", performance.now());
     }
     sendAudio() {}
     commit() {}
@@ -147,6 +151,7 @@ beforeEach(() => {
 
 beforeEach(() => {
   scribeCallbacks.length = 0;
+  scribeTokenProviders.length = 0;
   pcmOptions.current = null;
   createLiveSession.mockResolvedValue({ live_session_id: "live-1" });
   deleteLiveSession.mockResolvedValue(undefined);
@@ -565,8 +570,11 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onPartial("Yarın nereye");
     });
+    // Partial text is visible immediately: no rolling window, no speaker
+    // attribution, no committed transcript, no MediaRecorder chunk required.
     expect(screen.getByText("Yarın nereye")).toBeTruthy();
     expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+    expect(sendSpeakerWindow).not.toHaveBeenCalled();
 
     await act(async () => {
       scribeCallbacks[0].onCommitted("Yarın nereye gideceğiz?", [
@@ -586,6 +594,80 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     });
     expect(screen.queryByText("Kentpark'a")).toBeNull();
     expect(screen.getByText("Kentpark'a gideriz.")).toBeTruthy();
+  });
+
+  it("asks the realtime client for a fresh token through the backend provider", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    expect(scribeTokenProviders).toHaveLength(1);
+    await act(async () => {
+      await scribeTokenProviders[0]();
+    });
+    expect(getRealtimeToken).toHaveBeenCalledTimes(1);
+    // A reconnect in the client would call the same provider again; the panel
+    // never caches a token itself.
+    await act(async () => {
+      await scribeTokenProviders[0]();
+    });
+    expect(getRealtimeToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps committed text across a realtime reconnect", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("bağlantı kopmadan önce", [
+        { text: "bağlantı", start: 1, end: 2 },
+      ]);
+    });
+
+    await act(async () => {
+      scribeCallbacks[0].onStatus("reconnecting");
+    });
+    expect(screen.getByText("bağlantı kopmadan önce")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Kaydı Durdur" })).toBeTruthy();
+
+    await act(async () => {
+      scribeCallbacks[0].onStatus("connected");
+    });
+    expect(screen.getByText("bağlantı kopmadan önce")).toBeTruthy();
+  });
+
+  it("changes only the speaker label when diarization arrives after the text", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("metin aynı kalmalı", [
+        { text: "metin", start: 1, end: 2 },
+      ]);
+    });
+    const before = screen.getByText("metin aynı kalmalı").textContent;
+
+    await act(async () => {
+      emitChunks(4);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("metin aynı kalmalı").textContent).toBe(before);
+    expect(screen.getByText("Kişi 1")).toBeTruthy();
+    expect(screen.queryByText("Konuşmacı belirleniyor")).toBeNull();
   });
 
   it("attaches Kişi labels after the rolling window result arrives", async () => {
