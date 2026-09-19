@@ -271,7 +271,7 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   doomed job.
 - **Live ElevenLabs transcript (provider=elevenlabs):** while recording, Scribe v2 Realtime
   (single-use token minted by `POST /api/v1/transcription/providers/elevenlabs/realtime-token`)
-  streams partial/committed text; rolling 4 s / 1 s-overlap PCM windows are sent to
+  streams partial/committed text; rolling 6 s / 2 s-overlap PCM windows are sent to
   `POST /api/v1/live-transcription/sessions/{id}/speaker-window` and mapped onto stable
   `Kişi N` labels by temporal overlap (provider speaker ids are request-local). Speaker
   names typed during recording (`PUT .../speakers/{canonical}/alias`) are meeting-scoped and

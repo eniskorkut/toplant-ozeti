@@ -51,6 +51,7 @@ class SpeakerAssignment(BaseModel):
     canonical_speaker: str
     is_new: bool
     confidence: float | None = None
+    evidence: str = "overlap"
     start: float
     end: float
     speech_seconds: float
@@ -61,6 +62,7 @@ class SpeakerWindowResult(BaseModel):
     window: list[float]
     assignments: list[SpeakerAssignment]
     new_speakers: list[str]
+    ambiguous_speakers: int = 0
     provider_speakers: int
     latency_seconds: float
     rolling_seconds: float
@@ -224,6 +226,7 @@ async def submit_speaker_window(
         window=result["window"],
         assignments=[SpeakerAssignment(**item) for item in result["assignments"]],
         new_speakers=result["new_speakers"],
+        ambiguous_speakers=result["ambiguous_speakers"],
         provider_speakers=len(provider_intervals),
         latency_seconds=round(provider_latency, 3),
         rolling_seconds=round(session.rolling_seconds, 3),

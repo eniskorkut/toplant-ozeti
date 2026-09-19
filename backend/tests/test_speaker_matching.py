@@ -25,9 +25,10 @@ def test_request_local_speaker_ids_are_not_compared_by_name() -> None:
     canonical = {"Kişi 1": [(0.0, 2.0)], "Kişi 2": [(2.0, 4.0)]}
     provider = {"speaker_0": [(2.1, 4.0)]}
 
-    matches, unmatched = match_speakers(canonical, provider, window=(2.0, 4.0))
+    matches, unmatched, ambiguous = match_speakers(canonical, provider, window=(2.0, 4.0))
 
     assert unmatched == []
+    assert ambiguous == []
     assert matches["speaker_0"].canonical_speaker == "Kişi 2"
 
 
@@ -35,18 +36,20 @@ def test_low_confidence_overlap_creates_new_speaker_candidate() -> None:
     canonical = {"Kişi 1": [(0.0, 2.0)]}
     provider = {"speaker_0": [(1.95, 2.0)]}  # 50 ms of overlap: not enough
 
-    matches, unmatched = match_speakers(canonical, provider, window=(1.9, 2.0))
+    matches, unmatched, ambiguous = match_speakers(canonical, provider, window=(1.9, 2.0))
 
     assert matches == {}
     assert unmatched == ["speaker_0"]
+    assert ambiguous == []
 
 
 def test_one_to_one_matching_never_reuses_a_canonical() -> None:
     canonical = {"Kişi 1": [(0.0, 4.0)]}
     provider = {"speaker_0": [(0.0, 2.0)], "speaker_1": [(2.0, 4.0)]}
 
-    matches, unmatched = match_speakers(canonical, provider, window=(0.0, 4.0))
+    matches, unmatched, ambiguous = match_speakers(canonical, provider, window=(0.0, 4.0))
 
+    assert ambiguous == []
     assert len(matches) == 1
     assert len(unmatched) == 1
     # The stronger overlap wins deterministically; both are equal here, so the
@@ -111,3 +114,71 @@ def test_remap_never_applies_an_alias_to_an_unrelated_final_speaker() -> None:
     mapping = remap_final_speakers(live, final)
 
     assert mapping == {"speaker_x": "Kişi 2"}
+
+
+def test_ambiguous_overlap_stays_provisional() -> None:
+    # Two canonicals cover the same window equally: forcing a mapping would guess.
+    canonical = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(0.0, 4.0)]}
+    provider = {"speaker_0": [(0.0, 4.0)]}
+
+    matches, unmatched, ambiguous = match_speakers(canonical, provider, window=(0.0, 4.0))
+
+    assert matches == {}
+    assert unmatched == []
+    assert ambiguous == ["speaker_0"]
+
+
+def test_clear_winner_is_accepted_with_margin() -> None:
+    canonical = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(10.0, 14.0)]}
+    provider = {"speaker_0": [(0.0, 4.0)]}
+
+    matches, unmatched, ambiguous = match_speakers(canonical, provider, window=(0.0, 4.0))
+
+    assert ambiguous == []
+    assert matches["speaker_0"].canonical_speaker == "Kişi 1"
+    assert matches["speaker_0"].evidence == "overlap"
+
+
+def test_remap_treats_ambiguous_finals_as_new_labels() -> None:
+    live = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(0.0, 4.0)]}
+    final = {"speaker_x": [(0.0, 4.0)]}
+
+    mapping = remap_final_speakers(live, final)
+
+    # Never attach a possibly wrong alias: allocate a fresh canonical instead.
+    assert mapping == {"speaker_x": "Kişi 3"}
+
+
+def test_gap_continuity_requires_a_clear_nearest_canonical() -> None:
+    # After a pause both canonicals are equally close: do not guess a merge.
+    canonical = {"Kişi 1": [(0.0, 2.0)], "Kişi 2": [(0.0, 2.0)]}
+    provider = {"speaker_0": [(2.2, 3.0)]}
+
+    matches, unmatched, ambiguous = match_speakers(
+        canonical,
+        provider,
+        window=(2.0, 3.0),
+        gap_tolerance_seconds=2.0,
+        allow_disjoint_merge=True,
+    )
+
+    assert matches == {}
+    assert unmatched == []
+    assert ambiguous == ["speaker_0"]
+
+
+def test_gap_continuity_accepts_a_clearly_nearest_canonical() -> None:
+    canonical = {"Kişi 1": [(0.0, 2.0)], "Kişi 2": [(10.0, 12.0)]}
+    provider = {"speaker_0": [(2.2, 3.0)]}
+
+    matches, unmatched, ambiguous = match_speakers(
+        canonical,
+        provider,
+        window=(2.0, 3.0),
+        gap_tolerance_seconds=2.0,
+        allow_disjoint_merge=True,
+    )
+
+    assert ambiguous == []
+    assert matches["speaker_0"].canonical_speaker == "Kişi 1"
+    assert matches["speaker_0"].evidence == "gap"

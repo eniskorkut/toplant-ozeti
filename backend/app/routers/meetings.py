@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -43,6 +44,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/meetings", tags=["meetings"])
 
 MAX_SPEAKER_COUNT = 12
+
+
+def _iso_utc(value: datetime) -> str:
+    """UTC ISO-8601 with an explicit offset so clients render local time.
+
+    SQLite returns naive datetimes for timezone-aware columns; those values are
+    UTC by construction (written with datetime.now(UTC)). Without the offset a
+    browser would interpret them as local time (three hours off in Türkiye).
+    """
+    value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value.isoformat()
 
 
 class ProcessRequest(BaseModel):
@@ -147,7 +159,7 @@ def _meeting_status(meeting: Meeting, has_transcript: bool) -> MeetingStatus:
     return MeetingStatus(
         meeting_id=meeting.id,
         status=meeting.status,
-        created_at=meeting.created_at.isoformat(),
+        created_at=_iso_utc(meeting.created_at),
         duration_seconds=meeting.duration_seconds,
         requested_speaker_count=meeting.requested_speaker_count,
         processing_error=meeting.processing_error,
@@ -235,7 +247,7 @@ async def list_meetings(
     meetings = [
         MeetingSummary(
             meeting_id=meeting.id,
-            created_at=meeting.created_at.isoformat(),
+            created_at=_iso_utc(meeting.created_at),
             duration_seconds=meeting.duration_seconds,
             status=meeting.status,
             requested_speaker_count=meeting.requested_speaker_count,

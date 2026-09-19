@@ -16,6 +16,13 @@ from dataclasses import dataclass
 MIN_OVERLAP_SECONDS = 0.4
 MIN_OVERLAP_RATIO = 0.3
 DEFAULT_GAP_TOLERANCE_SECONDS = 2.0
+# A mapping must beat the runner-up clearly, otherwise it stays provisional.
+MIN_MARGIN_RATIO = 0.2
+MIN_MARGIN_SECONDS = 0.3
+# Gap continuity must also be clearly nearest: two canonicals at a similar
+# distance from a new segment mean we cannot tell them apart.
+GAP_MARGIN_SECONDS = 0.5
+GAP_MARGIN_RATIO = 1.5
 # Splitting one person into several request-local labels happens at segment
 # boundaries, so a merge requires a short silence.
 MERGE_GAP_SECONDS = 0.75
@@ -194,18 +201,22 @@ def match_speakers(
     min_overlap_ratio: float = MIN_OVERLAP_RATIO,
     gap_tolerance_seconds: float = 0.0,
     allow_disjoint_merge: bool = False,
-) -> tuple[dict[str, SpeakerMatch], list[str]]:
+    min_margin_ratio: float = MIN_MARGIN_RATIO,
+    min_margin_seconds: float = MIN_MARGIN_SECONDS,
+) -> tuple[dict[str, SpeakerMatch], list[str], list[str]]:
     """Match provider speakers to canonical speakers with confidence filtering.
 
-    Primary evidence is temporal overlap inside the shared region. When
-    `gap_tolerance_seconds` is set (live tracking only), speakers with no overlap
-    may still be linked to a canonical speaker when the silence between them is
-    short — a conversational pause must not mint a new person. With
-    `allow_disjoint_merge`, several request-local speakers that never talk at the
-    same time may fold into one canonical speaker (the provider sometimes splits
-    one person into multiple labels inside a single window).
+    Primary evidence is temporal overlap inside the shared region. A candidate is
+    only accepted when it beats the runner-up by a clear margin; otherwise the
+    provider speaker is reported as **ambiguous** (provisional) instead of being
+    forced onto a canonical speaker. When `gap_tolerance_seconds` is set (live
+    tracking only), speakers with no overlap may still be linked across a short
+    conversational pause, and `allow_disjoint_merge` folds request-local splits of
+    one person into a single canonical speaker.
 
-    Returns (accepted matches by provider speaker, unmatched provider speakers).
+    Returns (accepted matches, unmatched, ambiguous). Unmatched speakers have no
+    evidence at all (candidates for a new canonical); ambiguous speakers have
+    evidence but it is not decisive (they must stay provisional).
     """
     scores = score_pairs(canonical_intervals, provider_intervals, window=window)
     provider_totals = {
@@ -217,6 +228,25 @@ def match_speakers(
         ratio = score / provider_totals[pair[1]]
         if score >= min_overlap_seconds and ratio >= min_overlap_ratio:
             accepted[pair] = score
+
+    # Margin gate: prune dominated edges and remember speakers whose best edge is
+    # too close to the second best to be trustworthy.
+    ambiguous: set[str] = set()
+    if min_margin_ratio > 0 or min_margin_seconds > 0:
+        best_by_provider: dict[str, list[tuple[float, str]]] = {}
+        for (canonical_name, provider_name), score in accepted.items():
+            best_by_provider.setdefault(provider_name, []).append((score, canonical_name))
+        pruned: dict[tuple[str, str], float] = {}
+        for provider_name, edges in best_by_provider.items():
+            edges.sort(key=lambda item: (-item[0], item[1]))
+            best_score, best_label = edges[0]
+            second_score = edges[1][0] if len(edges) > 1 else 0.0
+            required = max(min_margin_seconds, best_score * min_margin_ratio)
+            if second_score > 0 and best_score - second_score < required:
+                ambiguous.add(provider_name)
+                continue
+            pruned[(best_label, provider_name)] = best_score
+        accepted = pruned
 
     matching = maximum_weight_matching(accepted)
     evidence = {provider: "overlap" for provider in matching}
@@ -230,11 +260,17 @@ def match_speakers(
         effective: dict[str, list[Interval]] = {
             label: list(spans) for label, spans in canonical_intervals.items()
         }
-        pending = [name for name in provider_intervals if name not in matching]
+        pending = [
+            name
+            for name in provider_intervals
+            if name not in matching and name not in ambiguous
+        ]
         while pending:
             best: tuple[float, str, str] | None = None
+            second_best: dict[str, float] = {}
             for provider_name in pending:
                 provider_spans = provider_intervals[provider_name]
+                gaps: list[tuple[float, str]] = []
                 for canonical_name, canonical_spans in effective.items():
                     gap = min(
                         (
@@ -245,12 +281,25 @@ def match_speakers(
                         default=float("inf"),
                     )
                     if gap <= gap_tolerance_seconds:
-                        candidate = (gap, canonical_name, provider_name)
-                        if best is None or candidate < best:
-                            best = candidate
+                        gaps.append((gap, canonical_name))
+                if not gaps:
+                    continue
+                gaps.sort(key=lambda item: (item[0], item[1]))
+                second_best[provider_name] = gaps[1][0] if len(gaps) > 1 else float("inf")
+                candidate = (gaps[0][0], gaps[0][1], provider_name)
+                if best is None or candidate < best:
+                    best = candidate
             if best is None:
                 break
             gap, canonical_name, provider_name = best
+            if second_best.get(provider_name, float("inf")) <= max(
+                gap * GAP_MARGIN_RATIO, gap + GAP_MARGIN_SECONDS
+            ):
+                # Two canonicals are equally plausible continuations: stay
+                # provisional instead of merging into the wrong person.
+                ambiguous.add(provider_name)
+                pending.remove(provider_name)
+                continue
             existing = assigned.get(canonical_name)
             if existing is None:
                 matching[provider_name] = canonical_name
@@ -288,8 +337,12 @@ def match_speakers(
             ratio=round(score / provider_totals[provider_name], 3),
             evidence=evidence[provider_name],
         )
-    unmatched = [name for name in provider_intervals if name not in matches]
-    return matches, sorted(unmatched)
+    unmatched = [
+        name
+        for name in provider_intervals
+        if name not in matches and name not in ambiguous
+    ]
+    return matches, sorted(unmatched), sorted(ambiguous)
 
 
 def next_canonical_label(existing: set[str]) -> str:
@@ -310,7 +363,9 @@ def remap_final_speakers(
     Unmatched final speakers get fresh Kişi N labels: a possibly wrong alias is
     never applied to an unrelated speaker.
     """
-    matches, unmatched = match_speakers(canonical_intervals, provider_intervals)
+    matches, unmatched, ambiguous = match_speakers(canonical_intervals, provider_intervals)
+    # Ambiguous finals are safer as fresh labels than as a possibly wrong alias.
+    unmatched = unmatched + ambiguous
     mapping: dict[str, str] = {
         provider: match.canonical_speaker for provider, match in matches.items()
     }

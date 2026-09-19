@@ -296,24 +296,24 @@ describe("RollingSpeakerTracker", () => {
       onResult: () => undefined,
     });
 
-    for (let second = 0; second < 4; second += 1) {
+    for (let second = 0; second < 6; second += 1) {
       tracker.push(pcm(1), second);
     }
     await Promise.resolve();
     await Promise.resolve();
-    expect(sent).toEqual([{ startSeconds: 0, endSeconds: 4, sequence: 1 }]);
+    expect(sent).toEqual([{ startSeconds: 0, endSeconds: 6, sequence: 1 }]);
 
-    for (let second = 4; second < 8; second += 1) {
+    for (let second = 6; second < 12; second += 1) {
       tracker.push(pcm(1), second);
     }
     await Promise.resolve();
     await Promise.resolve();
     expect(sent).toEqual([
-      { startSeconds: 0, endSeconds: 4, sequence: 1 },
-      { startSeconds: 3, endSeconds: 7, sequence: 2 },
+      { startSeconds: 0, endSeconds: 6, sequence: 1 },
+      { startSeconds: 4, endSeconds: 10, sequence: 2 },
     ]);
     expect(tracker.requestCount).toBe(2);
-    expect(tracker.uploadedSeconds).toBe(8);
+    expect(tracker.uploadedSeconds).toBe(12);
   });
 
   it("retries the same sequence once after a failure, on a delay", async () => {
@@ -343,7 +343,7 @@ describe("RollingSpeakerTracker", () => {
         onFailure: () => undefined,
       });
 
-      for (let second = 0; second < 4; second += 1) tracker.push(pcm(1), second);
+      for (let second = 0; second < 6; second += 1) tracker.push(pcm(1), second);
       await vi.advanceTimersByTimeAsync(0);
       expect(sequences).toEqual([1]);
 
@@ -371,7 +371,7 @@ describe("RollingSpeakerTracker", () => {
         onFailure: () => undefined,
       });
 
-      for (let second = 0; second < 7; second += 1) tracker.push(pcm(1), second);
+      for (let second = 0; second < 11; second += 1) tracker.push(pcm(1), second);
       await vi.advanceTimersByTimeAsync(0);
       expect(sequences).toEqual([1]);
       await vi.advanceTimersByTimeAsync(1600); // second failure -> window skipped
@@ -401,7 +401,7 @@ describe("RollingSpeakerTracker", () => {
       onResult: () => undefined,
     });
     tracker.stop();
-    for (let second = 0; second < 6; second += 1) tracker.push(pcm(1), second);
+    for (let second = 0; second < 8; second += 1) tracker.push(pcm(1), second);
     expect(tracker.requestCount).toBe(0);
   });
 });

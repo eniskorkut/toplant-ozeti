@@ -58,6 +58,8 @@ class LiveSession:
     rolling_seconds: float = 0.0
     label_switches: int = 0
     revision_events: int = 0
+    ambiguous_segments: int = 0
+    pending_intervals: list[Interval] = field(default_factory=list)
     speakers: dict[str, LiveSpeaker] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
 
@@ -78,6 +80,8 @@ class LiveSession:
             "rolling_seconds": round(self.rolling_seconds, 3),
             "label_switches": self.label_switches,
             "revision_events": self.revision_events,
+            "ambiguous_segments": self.ambiguous_segments,
+            "pending_seconds": round(total_seconds(self.pending_intervals), 3),
             "speakers": [
                 {
                     "canonical_speaker": label,
@@ -160,8 +164,17 @@ class LiveSessionStore:
         if min_overlap_ratio is not None:
             kwargs["min_overlap_ratio"] = min_overlap_ratio
 
-        matches, unmatched = match_speakers(
-            session.canonical_intervals(),
+        # Match against the PREVIOUS window's own intervals, not the accumulated
+        # history: overlapping windows share audio, so word timings in the shared
+        # region are direct evidence and a single wrong assignment cannot poison
+        # every later window. When a speaker did not appear in the previous
+        # window, fall back to their committed history (resumption after a gap).
+        reference = {
+            label: (list(speaker.latest) if speaker.latest else list(speaker.committed))
+            for label, speaker in session.speakers.items()
+        }
+        matches, unmatched, ambiguous = match_speakers(
+            reference,
             provider_intervals,
             window=window,
             gap_tolerance_seconds=DEFAULT_GAP_TOLERANCE_SECONDS,
@@ -180,15 +193,22 @@ class LiveSessionStore:
         assignments: list[dict] = []
         for provider_name in sorted(provider_intervals):
             spans = provider_intervals[provider_name]
+            if provider_name in ambiguous:
+                # Evidence exists but is not decisive: keep it provisional and do
+                # not pollute any canonical timeline with a guess.
+                session.pending_intervals.extend(spans)
+                continue
             match: SpeakerMatch | None = matches.get(provider_name)
             if match is None:
                 label = next_canonical_label(existing_labels)
                 existing_labels.add(label)
                 new_speakers.append(label)
                 confidence = None
+                evidence = "new"
             else:
                 label = match.canonical_speaker
                 confidence = match.ratio
+                evidence = match.evidence
             speaker = session.speaker(label)
             speaker.latest.extend(spans)
             assignments.append(
@@ -196,11 +216,13 @@ class LiveSessionStore:
                     "canonical_speaker": label,
                     "is_new": label in new_speakers,
                     "confidence": confidence,
+                    "evidence": evidence,
                     "start": round(min(start for start, _ in spans), 3),
                     "end": round(max(end for _, end in spans), 3),
                     "speech_seconds": round(total_seconds(spans), 3),
                 }
             )
+        session.ambiguous_segments += len(ambiguous)
 
         session.windows_received += 1
         session.rolling_seconds += max(0.0, window[1] - window[0])
@@ -217,6 +239,7 @@ class LiveSessionStore:
             "window": [round(window[0], 3), round(window[1], 3)],
             "assignments": assignments,
             "new_speakers": new_speakers,
+            "ambiguous_speakers": len(ambiguous),
         }
 
 

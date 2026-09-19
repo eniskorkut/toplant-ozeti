@@ -9,8 +9,11 @@
 
 import type { SpeakerWindowResult } from "@/lib/api";
 
-export const WINDOW_SECONDS = 4;
-export const OVERLAP_SECONDS = 1;
+// Selected by measured benchmark (data/meetings/b1095740…): 6 s windows with 2 s
+// overlap gave zero label switches/fragments on rapidly alternating speech, while
+// 4 s windows fragmented; 8–10 s windows only added label delay.
+export const WINDOW_SECONDS = 6;
+export const OVERLAP_SECONDS = 2;
 export const STEP_SECONDS = WINDOW_SECONDS - OVERLAP_SECONDS;
 /** One delayed retry per window; after that the window is skipped, never looped. */
 export const MAX_WINDOW_RETRIES = 2;

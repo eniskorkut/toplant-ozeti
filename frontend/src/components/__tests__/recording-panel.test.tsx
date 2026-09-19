@@ -158,7 +158,7 @@ beforeEach(() => {
   getRealtimeToken.mockResolvedValue({ token: "sutkn_test" });
   sendSpeakerWindow.mockResolvedValue({
     sequence: 1,
-    window: [0, 4],
+    window: [0, 6],
     assignments: [],
     new_speakers: [],
     provider_speakers: 0,
@@ -537,8 +537,9 @@ function rollingResult(overrides: Record<string, unknown> = {}) {
         canonical_speaker: "Kişi 1",
         is_new: true,
         confidence: null,
+        evidence: "overlap",
         start: 0,
-        end: 4,
+        end: 6,
         speech_seconds: 2,
       },
     ],
@@ -660,7 +661,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     const before = screen.getByText("metin aynı kalmalı").textContent;
 
     await act(async () => {
-      emitChunks(4);
+      emitChunks(6);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -687,14 +688,14 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
 
     await act(async () => {
-      emitChunks(4);
+      emitChunks(6);
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(sendSpeakerWindow).toHaveBeenCalledWith(
       "live-1",
-      expect.objectContaining({ sequence: 1, startSeconds: 0, endSeconds: 4 }),
+      expect.objectContaining({ sequence: 1, startSeconds: 0, endSeconds: 6 }),
     );
     expect(screen.queryByText("Konuşmacı belirleniyor")).toBeNull();
     expect(screen.getByText("Kişi 1")).toBeTruthy();
@@ -711,7 +712,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
 
     await act(async () => {
       scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
-      emitChunks(4);
+      emitChunks(6);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -747,7 +748,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await startLiveRecording();
     await act(async () => {
       scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
-      emitChunks(4);
+      emitChunks(6);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -806,7 +807,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
       scribeCallbacks[0].onCommitted("metin kaybolmasın", [
         { text: "metin", start: 1, end: 2 },
       ]);
-      emitChunks(4);
+      emitChunks(6);
       await Promise.resolve();
       await Promise.resolve();
     });

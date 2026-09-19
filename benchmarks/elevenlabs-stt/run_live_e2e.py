@@ -31,8 +31,8 @@ from websockets.sync.client import connect as ws_connect
 API = "http://localhost:8000"
 AUDIO = Path("/data/meetings/8266cc18930b40e6a3740c48bc543705/processing.wav")
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
-WINDOW_SECONDS = 4.0
-OVERLAP_SECONDS = 1.0
+WINDOW_SECONDS = 6.0
+OVERLAP_SECONDS = 2.0
 # Browser cadence: PcmCapture emits ~100 ms chunks (1600 samples at 16 kHz).
 CHUNK_SECONDS = 0.1
 PARTIAL_MIN_GAP_SECONDS = 1.0
