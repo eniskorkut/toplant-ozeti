@@ -23,6 +23,8 @@ def settings(**overrides) -> Settings:
         "llm_base_url": "https://api.example.com/v1",
         "llm_api_key": "not-a-real-key",
         "llm_model": "test-model",
+        "llm_fallback_model": None,
+        "llm_fallback_models": [],
         "llm_timeout_seconds": 5.0,
         "llm_max_retries": 2,
     }
@@ -150,3 +152,47 @@ def test_provider_never_logs_or_returns_the_key(monkeypatch: pytest.MonkeyPatch)
         logging.getLogger("app.services.llm_provider").removeHandler(handler)
 
     assert all("not-a-real-key" not in message for message in captured)
+
+
+def test_x_opencode_session_header_is_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_headers: dict = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured_headers.update(headers or {})
+        return FakeResponse(200, envelope())
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    provider = OpenAICompatibleProvider(settings())
+    provider.analyze(system_prompt="s", user_prompt="u", session_id="session-xyz")
+    assert captured_headers.get("x-opencode-session") == "session-xyz"
+    assert captured_headers.get("X-Session-Id") == "session-xyz"
+
+
+def test_fallback_model_used_when_primary_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    payloads_sent: list[dict] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        payloads_sent.append(json or {})
+        if json and json.get("model") == "model-primary":
+            return FakeResponse(401, {"error": {"message": "Model model-primary is not supported"}})
+        return FakeResponse(200, envelope())
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    s = settings(llm_model="model-primary", llm_fallback_model="model-fallback")
+    provider = OpenAICompatibleProvider(s)
+    res = provider.analyze(system_prompt="s", user_prompt="u", session_id="m1")
+
+    assert res.model == "model-fallback"
+    assert len(payloads_sent) == 2
+    assert payloads_sent[0]["model"] == "model-primary"
+    assert payloads_sent[1]["model"] == "model-fallback"
+
+
+def test_opencode_go_aliases_flash_free() -> None:
+    s = settings(
+        llm_base_url="https://opencode.ai/zen/go/v1",
+        llm_model="deepseek-v4-flash-free",
+        llm_fallback_model="deepseek-v4.1-flash",
+    )
+    provider = OpenAICompatibleProvider(s)
+    assert provider.models == ["deepseek-v4-flash", "deepseek-v4.1-flash"]

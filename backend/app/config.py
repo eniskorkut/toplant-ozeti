@@ -98,12 +98,39 @@ class Settings(BaseSettings):
     # SecretStr keeps the key out of logs and reprs.
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
+    llm_fallback_model: str | None = None
+    llm_fallback_models: list[str] = Field(default_factory=list)
     llm_timeout_seconds: float = 60.0
     llm_max_transcript_chars: int = 120_000
     llm_max_retries: int = 2
     # Not every OpenAI-compatible endpoint accepts response_format; only send it
     # when the operator explicitly enables JSON mode.
     llm_json_mode: bool = False
+
+    @field_validator("llm_fallback_models", mode="before")
+    @classmethod
+    def _parse_fallback_models(cls, value: object) -> list[str]:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    @property
+    def candidate_llm_models(self) -> list[str]:
+        """Ordered list of models to attempt: primary model followed by fallbacks."""
+        models: list[str] = []
+        if self.llm_model and self.llm_model.strip():
+            models.append(self.llm_model.strip())
+        if self.llm_fallback_model and self.llm_fallback_model.strip():
+            fallback = self.llm_fallback_model.strip()
+            if fallback not in models:
+                models.append(fallback)
+        for model in self.llm_fallback_models:
+            clean = model.strip()
+            if clean and clean not in models:
+                models.append(clean)
+        return models
 
     @field_validator("elevenlabs_diarization_threshold", mode="before")
     @classmethod

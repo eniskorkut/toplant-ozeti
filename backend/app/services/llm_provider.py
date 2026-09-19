@@ -28,9 +28,7 @@ ELIGIBILITY_ERROR = (
     "for meeting analysis."
 )
 
-RESTRICTED_ENDPOINTS = (
-    "opencode.ai/zen/go/v1",
-)
+RESTRICTED_ENDPOINTS: tuple[str, ...] = ()
 
 
 class LlmProviderError(RuntimeError):
@@ -101,77 +99,136 @@ class OpenAICompatibleProvider:
         assert settings.llm_base_url and settings.llm_api_key and settings.llm_model
         self._base_url = settings.llm_base_url.rstrip("/")
         self._api_key = settings.llm_api_key.get_secret_value()
-        self._model = settings.llm_model
+        self._models = self._resolve_models(settings)
+        self._model = self._models[0]
         self._timeout = settings.llm_timeout_seconds
         self._max_retries = settings.llm_max_retries
         self._json_mode = settings.llm_json_mode
+
+    @classmethod
+    def _resolve_models(cls, settings: Settings) -> list[str]:
+        raw_models = settings.candidate_llm_models
+        normalized: list[str] = []
+        is_opencode_go = "opencode.ai/zen/go" in (settings.llm_base_url or "").lower()
+        for m in raw_models:
+            name = m.strip()
+            if is_opencode_go and name == "deepseek-v4-flash-free":
+                name = "deepseek-v4-flash"
+            if name and name not in normalized:
+                normalized.append(name)
+        if not normalized and settings.llm_model:
+            normalized.append(settings.llm_model.strip())
+        return normalized
 
     @property
     def provider_name(self) -> str:
         return urlparse(self._base_url).netloc or "openai-compatible"
 
+    @property
+    def models(self) -> list[str]:
+        return list(self._models)
+
     def analyze(self, *, system_prompt: str, user_prompt: str, session_id: str) -> ProviderResponse:
         if endpoint_is_restricted(self._base_url):
             raise LlmConfigurationError(ELIGIBILITY_ERROR)
 
-        payload = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0,
-        }
-        # Portable default: rely on JSON-only prompting + local validation. The
-        # response_format hint is only sent when explicitly enabled.
-        if self._json_mode:
-            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "X-Session-Id": session_id,
+            "x-opencode-session": session_id,
         }
 
-        last_error: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            started = time.perf_counter()
-            try:
-                response = httpx.post(
-                    f"{self._base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                    timeout=self._timeout,
-                )
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                last_error = LlmTransportError(f"provider connection failed: {type(exc).__name__}")
-                logger.warning("analysis provider transport error (attempt %d)", attempt + 1)
-                self._backoff(attempt)
-                continue
+        overall_last_error: Exception | None = None
 
-            latency = time.perf_counter() - started
-            if response.status_code >= 400:
-                error = LlmHttpError(
-                    response.status_code, f"provider returned HTTP {response.status_code}"
+        for model_idx, model in enumerate(self._models):
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+            }
+            # Portable default: rely on JSON-only prompting + local validation. The
+            # response_format hint is only sent when explicitly enabled.
+            if self._json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+            model_last_error: Exception | None = None
+            for attempt in range(self._max_retries + 1):
+                started = time.perf_counter()
+                try:
+                    response = httpx.post(
+                        f"{self._base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=self._timeout,
+                    )
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    model_last_error = LlmTransportError(f"provider connection failed: {type(exc).__name__}")
+                    logger.warning(
+                        "analysis provider transport error (model=%s, attempt=%d)",
+                        model,
+                        attempt + 1,
+                    )
+                    self._backoff(attempt)
+                    continue
+
+                latency = time.perf_counter() - started
+                if response.status_code >= 400:
+                    error_detail = ""
+                    try:
+                        err_body = response.json()
+                        if isinstance(err_body, dict):
+                            err_obj = err_body.get("error")
+                            if isinstance(err_obj, dict):
+                                error_detail = f": {err_obj.get('message') or err_obj.get('type')}"
+                            elif isinstance(err_obj, str):
+                                error_detail = f": {err_obj}"
+                    except Exception:
+                        pass
+                    error = LlmHttpError(
+                        response.status_code, f"provider returned HTTP {response.status_code}{error_detail}"
+                    )
+                    if not error.retryable:
+                        # Never retry auth/forbidden or other client errors on this model.
+                        model_last_error = error
+                        break
+                    model_last_error = error
+                    logger.warning(
+                        "analysis provider HTTP %d (model=%s, attempt=%d)",
+                        response.status_code,
+                        model,
+                        attempt + 1,
+                    )
+                    self._backoff(attempt)
+                    continue
+
+                try:
+                    content = self._extract_content(response)
+                except LlmResponseError as exc:
+                    model_last_error = exc
+                    break
+
+                return ProviderResponse(
+                    content=content,
+                    provider=self.provider_name,
+                    model=model,
+                    latency_seconds=round(latency, 3),
                 )
-                if not error.retryable:
-                    # Never retry auth/forbidden or other client errors.
-                    raise error
-                last_error = error
+
+            overall_last_error = model_last_error
+            if model_idx < len(self._models) - 1:
                 logger.warning(
-                    "analysis provider HTTP %d (attempt %d)", response.status_code, attempt + 1
+                    "model %s failed (%s); falling back to %s",
+                    model,
+                    model_last_error,
+                    self._models[model_idx + 1],
                 )
-                self._backoff(attempt)
-                continue
 
-            return ProviderResponse(
-                content=self._extract_content(response),
-                provider=self.provider_name,
-                model=self._model,
-                latency_seconds=round(latency, 3),
-            )
-
-        assert last_error is not None
-        raise last_error
+        assert overall_last_error is not None
+        raise overall_last_error
 
     @staticmethod
     def _extract_content(response: httpx.Response) -> str:

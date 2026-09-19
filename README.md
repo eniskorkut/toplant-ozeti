@@ -265,8 +265,8 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   `MEETING_LLM_PROVIDER=openai_compatible`, `MEETING_LLM_BASE_URL=...`,
   `MEETING_LLM_API_KEY=...`, `MEETING_LLM_MODEL=...` (plus optional
   `MEETING_LLM_JSON_MODE=false`, `MEETING_LLM_TIMEOUT_SECONDS`, `MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
-  Switching models is config-only. The coding-agent endpoint `opencode.ai/zen/go/v1` stays
-  rejected by the eligibility guard; use a general-purpose (pay-as-you-go) endpoint.
+  Switching models and configuring fallback (`MEETING_LLM_FALLBACK_MODEL`) is config-only.
+  Both OpenCode Go (`https://opencode.ai/zen/go/v1`) and general-purpose endpoints are supported.
   Without all three required values `POST /api/v1/meetings/{id}/analyze` fails fast with 503
   instead of queueing a doomed job.
 - **Usage/quota:** `GET /api/v1/transcription/providers/elevenlabs/usage` returns only
@@ -309,10 +309,9 @@ GET /api/v1/meetings/{id}/analysis   (timestamps derived from persisted turns)
   local E2E; the default is `openai_compatible`.
 - Secrets are read from `MEETING_LLM_BASE_URL`, `MEETING_LLM_API_KEY`,
   `MEETING_LLM_MODEL` (never logged, never returned); `.env` files are git-ignored.
-- **Eligibility guard (temporary):** endpoints reserved for coding-agent traffic
-  (currently `https://opencode.ai/zen/go/v1`) are refused before any meeting content is
-  sent — `Configured LLM endpoint is restricted to coding-agent traffic and is not
-  enabled for meeting analysis.`
+- **Model selection & fallback:** The primary model is tried first (`MEETING_LLM_MODEL`),
+  and if unavailable or failing, automatic fallback occurs to `MEETING_LLM_FALLBACK_MODEL`.
+  OpenCode Go (`https://opencode.ai/zen/go/v1`) is supported using the required `x-opencode-session` header.
 - Long transcripts are rejected with a clear error instead of silent truncation
   (`MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
 

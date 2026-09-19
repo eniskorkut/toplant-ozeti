@@ -160,8 +160,19 @@ def test_malformed_json_is_rejected() -> None:
         "https://opencode.ai/zen/go/v1/chat/completions",
     ],
 )
-def test_opencode_go_endpoint_is_restricted(url: str) -> None:
-    assert endpoint_is_restricted(url)
+def test_opencode_go_endpoint_is_allowed(url: str) -> None:
+    assert not endpoint_is_restricted(url)
+
+
+def test_build_provider_accepts_opencode_go() -> None:
+    settings = Settings(
+        llm_provider="openai_compatible",
+        llm_base_url="https://opencode.ai/zen/go/v1",
+        llm_api_key="test-key-not-real",
+        llm_model="deepseek-v4-flash",
+    )
+    provider = build_provider(settings)
+    assert provider is not None
 
 
 def test_other_endpoints_are_allowed() -> None:
@@ -171,13 +182,16 @@ def test_other_endpoints_are_allowed() -> None:
 def test_restricted_provider_is_refused_and_sends_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.llm_provider.RESTRICTED_ENDPOINTS", ("blocked.example.com",)
+    )
     calls: list = []
     monkeypatch.setattr(
         "httpx.post", lambda *args, **kwargs: calls.append(args) or pytest.fail("request sent")
     )
     settings = Settings(
         llm_provider="openai_compatible",
-        llm_base_url="https://opencode.ai/zen/go/v1",
+        llm_base_url="https://blocked.example.com/v1",
         llm_api_key="test-key-not-real",
         llm_model="test-model",
     )
