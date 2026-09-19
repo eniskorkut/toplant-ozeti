@@ -892,7 +892,9 @@ export function RecordingPanel() {
                           {usage.reset_at ? (
                             <UsageItem
                               label="Yenilenme"
-                              value={new Date(usage.reset_at).toLocaleDateString("tr-TR")}
+                              value={new Date(usage.reset_at).toLocaleDateString("tr-TR", {
+                                timeZone: "Europe/Istanbul",
+                              })}
                             />
                           ) : null}
                         </dl>

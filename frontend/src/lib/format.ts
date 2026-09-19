@@ -1,5 +1,21 @@
 /** Small formatting helpers shared by the meeting UI. */
 
+/**
+ * Display timezone is pinned to Istanbul: the product is Turkish and meeting
+ * times must read the same regardless of the viewer's device timezone.
+ */
+export const DISPLAY_TIME_ZONE = "Europe/Istanbul";
+
+/**
+ * Timestamps without an explicit offset are stored UTC (SQLite rows) and must
+ * not be re-interpreted as device-local time. The API now appends "+00:00";
+ * this is the defensive fallback for cached or legacy payloads.
+ */
+function parseTimestamp(isoTimestamp: string): Date {
+  const hasOffset = /(?:z|[+-]\d{2}:?\d{2})$/i.test(isoTimestamp.trim());
+  return new Date(hasOffset ? isoTimestamp : `${isoTimestamp}Z`);
+}
+
 export function formatDuration(totalSeconds: number | null | undefined): string {
   if (totalSeconds == null || Number.isNaN(totalSeconds)) {
     return "—";
@@ -30,11 +46,12 @@ export function formatTimestamp(totalSeconds: number | null | undefined): string
 }
 
 export function formatDateTime(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
+  const date = parseTimestamp(isoTimestamp);
   if (Number.isNaN(date.getTime())) {
     return isoTimestamp;
   }
   return date.toLocaleString("tr-TR", {
+    timeZone: DISPLAY_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -45,11 +62,12 @@ export function formatDateTime(isoTimestamp: string): string {
 
 /** Human detail header, e.g. "18 Eylül 2026, 20:03". */
 export function formatMeetingDate(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
+  const date = parseTimestamp(isoTimestamp);
   if (Number.isNaN(date.getTime())) {
     return isoTimestamp;
   }
   return date.toLocaleString("tr-TR", {
+    timeZone: DISPLAY_TIME_ZONE,
     day: "numeric",
     month: "long",
     year: "numeric",
@@ -60,11 +78,12 @@ export function formatMeetingDate(isoTimestamp: string): string {
 
 /** Compact history row label, e.g. "18 Eyl 2026, 20:03". */
 export function formatMeetingDateShort(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
+  const date = parseTimestamp(isoTimestamp);
   if (Number.isNaN(date.getTime())) {
     return isoTimestamp;
   }
   return date.toLocaleString("tr-TR", {
+    timeZone: DISPLAY_TIME_ZONE,
     day: "numeric",
     month: "short",
     year: "numeric",
