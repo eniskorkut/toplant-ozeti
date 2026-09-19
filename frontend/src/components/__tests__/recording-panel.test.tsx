@@ -13,6 +13,12 @@ const processMeeting = vi.fn();
 const getMeeting = vi.fn();
 const getTranscriptionProviders = vi.fn();
 const getElevenLabsUsage = vi.fn();
+const createLiveSession = vi.fn();
+const deleteLiveSession = vi.fn();
+const getRealtimeToken = vi.fn();
+const sendSpeakerWindow = vi.fn();
+const setLiveSpeakerAlias = vi.fn();
+const clearLiveSpeakerAlias = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -23,11 +29,60 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getMeeting: (...args: unknown[]) => getMeeting(...args),
     getTranscriptionProviders: (...args: unknown[]) => getTranscriptionProviders(...args),
     getElevenLabsUsage: (...args: unknown[]) => getElevenLabsUsage(...args),
+    createLiveSession: (...args: unknown[]) => createLiveSession(...args),
+    deleteLiveSession: (...args: unknown[]) => deleteLiveSession(...args),
+    getRealtimeToken: (...args: unknown[]) => getRealtimeToken(...args),
+    sendSpeakerWindow: (...args: unknown[]) => sendSpeakerWindow(...args),
+    setLiveSpeakerAlias: (...args: unknown[]) => setLiveSpeakerAlias(...args),
+    clearLiveSpeakerAlias: (...args: unknown[]) => clearLiveSpeakerAlias(...args),
   };
 });
 
+const scribeCallbacks: Array<{
+  onPartial: (text: string) => void;
+  onCommitted: (text: string, words: unknown[]) => void;
+  onStatus: (status: string) => void;
+}> = [];
+vi.mock("@/lib/scribe-realtime", () => ({
+  ScribeRealtimeClient: class {
+    private callbacks: (typeof scribeCallbacks)[number];
+    constructor(callbacks: (typeof scribeCallbacks)[number]) {
+      this.callbacks = callbacks;
+      scribeCallbacks.push(callbacks);
+    }
+    open() {
+      this.callbacks.onStatus("connected");
+    }
+    sendAudio() {}
+    commit() {}
+    close() {}
+  },
+}));
+
+const pcmOptions: {
+  current: null | {
+    onChunk: (pcm: ArrayBuffer, startSeconds: number) => void;
+    onError?: (error: Error) => void;
+  };
+} = { current: null };
+
+vi.mock("@/lib/pcm-capture", () => ({
+  PcmCapture: class {
+    constructor(_stream: unknown, options: (typeof pcmOptions)["current"]) {
+      pcmOptions.current = options;
+    }
+    async start() {
+      return 48000;
+    }
+    stop() {}
+  },
+}));
+
 vi.mock("@/lib/audio-recorder", () => ({
   MeetingRecorder: class {
+    get audioStream() {
+      return { id: "stream" };
+    }
     start(...args: unknown[]) {
       return start(...args);
     }
@@ -88,6 +143,26 @@ beforeEach(() => {
   // jsdom has no object-URL implementation; add only the missing statics.
   URL.createObjectURL = vi.fn(() => "blob:preview");
   URL.revokeObjectURL = vi.fn();
+});
+
+beforeEach(() => {
+  scribeCallbacks.length = 0;
+  pcmOptions.current = null;
+  createLiveSession.mockResolvedValue({ live_session_id: "live-1" });
+  deleteLiveSession.mockResolvedValue(undefined);
+  getRealtimeToken.mockResolvedValue({ token: "sutkn_test" });
+  sendSpeakerWindow.mockResolvedValue({
+    sequence: 1,
+    window: [0, 4],
+    assignments: [],
+    new_speakers: [],
+    provider_speakers: 0,
+    latency_seconds: 0.5,
+    rolling_seconds: 4,
+    label_switches: 0,
+  });
+  setLiveSpeakerAlias.mockResolvedValue({ canonical_speaker: "Kişi 1", display_name: "Ahmet" });
+  clearLiveSpeakerAlias.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -309,7 +384,6 @@ describe("RecordingPanel provider selection", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
 
     expect(getTranscriptionProviders).toHaveBeenCalled();
     const local = screen.getByRole("radio", { name: /Yerel/ });
@@ -322,39 +396,35 @@ describe("RecordingPanel provider selection", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
 
     const elevenlabs = screen.getByRole("radio", { name: /ElevenLabs/ });
     expect(elevenlabs).toBeDisabled();
     expect(screen.getByText("ElevenLabs API yapılandırılmamış.")).toBeTruthy();
   });
 
-  it("requires cloud acknowledgment before queueing ElevenLabs", async () => {
+  it("requires cloud acknowledgment before recording and keeps it for queueing", async () => {
     getTranscriptionProviders.mockResolvedValue(capabilities(true));
     render(<RecordingPanel />);
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
     });
-    const startButton = screen.getByRole("button", { name: "Transkripsiyonu Başlat" });
-    expect(startButton).toBeDisabled();
-    expect(
-      screen.getByText(/Ses kaydının transkripsiyon amacıyla ElevenLabs'a gönderileceğini/),
-    ).toBeTruthy();
+    const startRecording = screen.getByRole("button", { name: "Kaydı Başlat" });
+    expect(startRecording).toBeDisabled();
+    expect(screen.getByText(/ElevenLabs'a gönderileceğini/)).toBeTruthy();
     expect(screen.getByText(/beklenen azami sayıdır/)).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("checkbox"));
     });
-    expect(startButton).not.toBeDisabled();
+    expect(startRecording).not.toBeDisabled();
 
-    await act(async () => {
-      fireEvent.click(startButton);
-    });
+    await recordAndUpload();
+    await queueProcessing();
+
     expect(processMeeting).toHaveBeenCalledWith("m-new", {
       speakerCount: null,
       transcriptionProvider: "elevenlabs",
@@ -366,10 +436,8 @@ describe("RecordingPanel provider selection", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
 
-    const startButton = screen.getByRole("button", { name: "Transkripsiyonu Başlat" });
-    expect(startButton).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Kaydı Başlat" })).not.toBeDisabled();
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 });
@@ -391,7 +459,6 @@ describe("RecordingPanel ElevenLabs usage display", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
     await act(async () => {
       fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
     });
@@ -409,7 +476,6 @@ describe("RecordingPanel ElevenLabs usage display", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
     await act(async () => {
       fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
     });
@@ -427,12 +493,286 @@ describe("RecordingPanel ElevenLabs usage display", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await recordAndUpload();
     await act(async () => {
       fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
     });
 
     expect(await screen.findByText(/Developers → Analytics → Usage/)).toBeTruthy();
     expect(screen.getByRole("checkbox")).toBeTruthy();
+  });
+});
+
+async function selectLiveProvider() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("radio", { name: /ElevenLabs/ }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("checkbox"));
+  });
+}
+
+async function startLiveRecording() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+  });
+}
+
+function emitChunks(seconds: number) {
+  for (let second = 0; second < seconds; second += 1) {
+    pcmOptions.current?.onChunk(new Int16Array(16_000).buffer, second);
+  }
+}
+
+function rollingResult(overrides: Record<string, unknown> = {}) {
+  return {
+    sequence: 1,
+    window: [0, 4],
+    assignments: [
+      {
+        canonical_speaker: "Kişi 1",
+        is_new: true,
+        confidence: null,
+        start: 0,
+        end: 4,
+        speech_seconds: 2,
+      },
+    ],
+    new_speakers: ["Kişi 1"],
+    provider_speakers: 1,
+    latency_seconds: 0.6,
+    rolling_seconds: 4,
+    label_switches: 0,
+    ...overrides,
+  };
+}
+
+describe("RecordingPanel live ElevenLabs mode", () => {
+  beforeEach(() => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+  });
+
+  it("shows partials, replaces them with committed text and never duplicates", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    expect(scribeCallbacks).toHaveLength(1);
+    expect(screen.getByText("Canlı transkript")).toBeTruthy();
+
+    await act(async () => {
+      scribeCallbacks[0].onPartial("Yarın nereye");
+    });
+    expect(screen.getByText("Yarın nereye")).toBeTruthy();
+    expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("Yarın nereye gideceğiz?", [
+        { text: "Yarın", start: 1, end: 2 },
+      ]);
+    });
+    expect(screen.queryByText("Yarın nereye")).toBeNull();
+    expect(screen.getAllByText("Yarın nereye gideceğiz?")).toHaveLength(1);
+
+    await act(async () => {
+      scribeCallbacks[0].onPartial("Kentpark'a");
+    });
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("Kentpark'a gideriz.", [
+        { text: "Kentpark'a", start: 3, end: 4 },
+      ]);
+    });
+    expect(screen.queryByText("Kentpark'a")).toBeNull();
+    expect(screen.getByText("Kentpark'a gideriz.")).toBeTruthy();
+  });
+
+  it("attaches Kişi labels after the rolling window result arrives", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("Yarın nereye gideceğiz?", [
+        { text: "Yarın", start: 1, end: 2 },
+      ]);
+    });
+    expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+
+    await act(async () => {
+      emitChunks(4);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(sendSpeakerWindow).toHaveBeenCalledWith(
+      "live-1",
+      expect.objectContaining({ sequence: 1, startSeconds: 0, endSeconds: 4 }),
+    );
+    expect(screen.queryByText("Konuşmacı belirleniyor")).toBeNull();
+    expect(screen.getByText("Kişi 1")).toBeTruthy();
+  });
+
+  it("renames Kişi 1 to Ahmet and applies it to existing and future lines", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
+      emitChunks(4);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Kişi 1")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Kişi 1 · Konuşmacı adını düzenle/ }));
+    });
+    const input = screen.getByLabelText("Ad");
+    fireEvent.change(input, { target: { value: "Ahmet" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydet" }));
+    });
+
+    expect(setLiveSpeakerAlias).toHaveBeenCalledWith("live-1", "Kişi 1", "Ahmet");
+    expect(screen.getByText("Ahmet")).toBeTruthy();
+    expect(screen.queryByText("Kişi 1")).toBeNull();
+
+    // Future lines with the same canonical label display the alias too.
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("ikinci cümle", [{ text: "ikinci", start: 2, end: 3 }]);
+    });
+    expect(screen.getAllByText("Ahmet").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("resets an alias back to the canonical label", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
+      emitChunks(4);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Kişi 1 · Konuşmacı adını düzenle/ }));
+    });
+    fireEvent.change(screen.getByLabelText("Ad"), { target: { value: "Ahmet" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydet" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Ahmet · Konuşmacı adını düzenle/ }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /sıfırla/ }));
+    });
+
+    expect(clearLiveSpeakerAlias).toHaveBeenCalledWith("live-1", "Kişi 1");
+    expect(screen.getByText("Kişi 1")).toBeTruthy();
+    expect(screen.queryByText("Ahmet")).toBeNull();
+  });
+
+  it("keeps recording when the realtime socket fails", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+
+    await act(async () => {
+      scribeCallbacks[0].onStatus("failed");
+    });
+
+    expect(
+      screen.getAllByText(/Canlı transkript bağlantısı kesildi — kayıt devam ediyor/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Kaydı Durdur" })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
+    });
+    expect(uploadRecording).toHaveBeenCalled();
+  });
+
+  it("keeps live text and recording when rolling diarization fails", async () => {
+    sendSpeakerWindow.mockRejectedValue(new Error("rolling down"));
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("metin kaybolmasın", [
+        { text: "metin", start: 1, end: 2 },
+      ]);
+      emitChunks(4);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("metin kaybolmasın")).toBeTruthy();
+    expect(
+      screen.getAllByText(/Konuşmacı etiketleri şu an alınamıyor/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Kaydı Durdur" })).toBeTruthy();
+  });
+
+  it("uploads with the live session id and replaces live text with the final state", async () => {
+    vi.useFakeTimers();
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("geçici metin", [{ text: "geçici", start: 1, end: 2 }]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
+    });
+    expect(uploadRecording).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ liveSessionId: "live-1" }),
+    );
+
+    await queueProcessing();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+
+    expect(screen.getByText("Transkripsiyon tamamlandı.")).toBeTruthy();
+    expect(screen.queryByText("Canlı transkript")).toBeNull();
+    expect(screen.queryByText("geçici metin")).toBeNull();
+  });
+
+  it("does not start the live pipeline for the local provider", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await recordAndUpload();
+    expect(createLiveSession).not.toHaveBeenCalled();
+    expect(getRealtimeToken).not.toHaveBeenCalled();
   });
 });

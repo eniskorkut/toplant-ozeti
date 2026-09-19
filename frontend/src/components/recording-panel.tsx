@@ -4,15 +4,26 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AudioPlayer } from "@/components/audio-player";
+import { LiveTranscript, type LiveLine } from "@/components/live-transcript";
+import { SpeakerRenameDialog } from "@/components/speaker-rename-dialog";
 import {
   ApiError,
+  clearLiveSpeakerAlias,
+  clearMeetingSpeakerAlias,
+  createLiveSession,
+  deleteLiveSession,
   getElevenLabsUsage,
   getMeeting,
+  getRealtimeToken,
   getTranscriptionProviders,
   processMeeting,
+  sendSpeakerWindow,
+  setLiveSpeakerAlias,
+  setMeetingSpeakerAlias,
   uploadRecording,
   type ElevenLabsUsage,
   type ProviderCapabilities,
+  type SpeakerWindowResult,
   type TranscriptionProviderId,
 } from "@/lib/api";
 import {
@@ -23,6 +34,10 @@ import {
 } from "@/lib/audio-recorder";
 import { formatDuration, statusLabel } from "@/lib/format";
 import { ChevronDownIcon, MicIcon, StopIcon } from "@/lib/icons";
+import { PcmCapture } from "@/lib/pcm-capture";
+import { RollingSpeakerTracker } from "@/lib/rolling-speaker";
+import { ScribeRealtimeClient, type RealtimeStatus } from "@/lib/scribe-realtime";
+import { applyAlias, type SpeakerAliases } from "@/lib/speakers";
 
 type Status =
   | "idle"
@@ -53,7 +68,8 @@ const SPEAKER_OPTIONS = [
 
 const PROVIDER_DESCRIPTIONS: Record<TranscriptionProviderId, string> = {
   local: "Ses cihazınızdan dışarı gönderilmez.",
-  elevenlabs: "Daha hızlı ve daha yüksek transkripsiyon doğruluğu; ses ElevenLabs'a gönderilir.",
+  elevenlabs:
+    "Daha hızlı ve daha yüksek transkripsiyon doğruluğu; canlı transkript ve konuşmacı etiketleri için ses ElevenLabs'a gönderilir.",
 };
 
 function formatBytes(bytes: number): string {
@@ -65,6 +81,15 @@ function formatBytes(bytes: number): string {
 function formatBitrate(bitsPerSecond: number | null): string {
   if (!bitsPerSecond) return "tarayıcı bildirmedi";
   return `${(bitsPerSecond / 1000).toFixed(0)} kbps`;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
 }
 
 function UsageItem({ label, value }: { label: string; value: string }) {
@@ -137,11 +162,38 @@ function LevelMeter({ stream }: { stream: MediaStream | null }) {
   );
 }
 
+function deriveLiveStatus(
+  lines: LiveLine[],
+  realtimeStatus: RealtimeStatus,
+): string {
+  if (realtimeStatus === "connecting" || realtimeStatus === "reconnecting") {
+    return "Bağlanıyor…";
+  }
+  if (realtimeStatus === "idle") return "Canlı transkript";
+  if (lines.length === 0) return "Dinleniyor";
+  if (lines.some((line) => line.provisional)) return "Metin işleniyor";
+  if (lines.some((line) => !line.canonical)) return "Konuşmacılar eşleştiriliyor";
+  return "Dinleniyor";
+}
+
 export function RecordingPanel() {
   const recorderRef = useRef<MeetingRecorder | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const startedAtRef = useRef(0);
+
+  const scribeRef = useRef<ScribeRealtimeClient | null>(null);
+  const pcmRef = useRef<PcmCapture | null>(null);
+  const trackerRef = useRef<RollingSpeakerTracker | null>(null);
+  const lastRollingResultRef = useRef<SpeakerWindowResult | null>(null);
+  const lineIdRef = useRef(0);
+  const lastAudioEndRef = useRef<number | null>(null);
+  const partialSeenRef = useRef(false);
+  const metricsRef = useRef<{ partial: number[]; committed: number[]; label: number[] }>({
+    partial: [],
+    committed: [],
+    label: [],
+  });
 
   const [status, setStatus] = useState<Status>("idle");
   const [session, setSession] = useState<RecorderSession | null>(null);
@@ -151,6 +203,8 @@ export function RecordingPanel() {
   const [uploadedBytes, setUploadedBytes] = useState<number | null>(null);
   const [uploadedDuration, setUploadedDuration] = useState<number | null>(null);
   const [speakerChoice, setSpeakerChoice] = useState<(typeof SPEAKER_OPTIONS)[number]>("auto");
+  const [liveSpeakerChoice, setLiveSpeakerChoice] =
+    useState<(typeof SPEAKER_OPTIONS)[number]>("auto");
   const [providers, setProviders] = useState<ProviderCapabilities | null>(null);
   const [providerChoice, setProviderChoice] = useState<TranscriptionProviderId>("local");
   const [cloudAcknowledged, setCloudAcknowledged] = useState(false);
@@ -160,6 +214,23 @@ export function RecordingPanel() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [processingError, setProcessingError] = useState<string | null>(null);
+
+  // Live (ElevenLabs only) state
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
+  const [liveLines, setLiveLines] = useState<LiveLine[]>([]);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("idle");
+  const [liveWarning, setLiveWarning] = useState<string | null>(null);
+  const [aliases, setAliases] = useState<SpeakerAliases>({});
+  const [renameSpeaker, setRenameSpeaker] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [liveMetrics, setLiveMetrics] = useState<{
+    partial: number | null;
+    committed: number | null;
+    label: number | null;
+    rollingSeconds: number;
+    requests: number;
+  } | null>(null);
 
   const releasePreview = useCallback(() => {
     if (previewUrlRef.current) {
@@ -172,6 +243,9 @@ export function RecordingPanel() {
   useEffect(() => {
     return () => {
       recorderRef.current?.dispose();
+      scribeRef.current?.close();
+      pcmRef.current?.stop();
+      trackerRef.current?.stop();
       if (previewUrlRef.current) {
         URL.revokeObjectURL(previewUrlRef.current);
       }
@@ -220,8 +294,6 @@ export function RecordingPanel() {
   }, [status]);
 
   // Explicit polling loop: exactly one outstanding timer/request at a time.
-  // The next poll is scheduled from inside the loop, so it never depends on a
-  // state update to the same value ("processing" -> "processing") to continue.
   useEffect(() => {
     if (status !== "processing" || !meetingId) return;
     let cancelled = false;
@@ -240,7 +312,6 @@ export function RecordingPanel() {
           setStatus("failed");
           return;
         }
-        // Still queued/processing: keep polling.
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       } catch (pollError) {
         if (cancelled) return;
@@ -260,6 +331,174 @@ export function RecordingPanel() {
     };
   }, [status, meetingId]);
 
+  // --- live pipeline callbacks -------------------------------------------
+
+  const elapsedSeconds = useCallback(() => (Date.now() - startedAtRef.current) / 1000, []);
+
+  const attachSpeakerLabels = useCallback((result: SpeakerWindowResult) => {
+    lastRollingResultRef.current = result;
+    setLiveLines((previous) =>
+      previous.map((line) => {
+        if (line.canonical) return line;
+        const midpoint = (line.startSeconds + line.endSeconds) / 2;
+        const match = result.assignments.find(
+          (assignment) => midpoint >= assignment.start - 0.5 && midpoint <= assignment.end + 0.5,
+        );
+        if (!match) return line;
+        if (!line.provisional) {
+          metricsRef.current.label.push(Math.max(0, elapsedSeconds() - line.endSeconds));
+        }
+        return { ...line, canonical: match.canonical_speaker };
+      }),
+    );
+  }, [elapsedSeconds]);
+
+  const handlePartial = useCallback(
+    (text: string) => {
+      const now = elapsedSeconds();
+      if (!partialSeenRef.current && lastAudioEndRef.current !== null) {
+        metricsRef.current.partial.push(Math.max(0, now - lastAudioEndRef.current));
+      }
+      partialSeenRef.current = true;
+      setLiveLines((previous) => {
+        const next = [...previous];
+        const last = next[next.length - 1];
+        if (last && last.provisional) {
+          next[next.length - 1] = { ...last, text, endSeconds: now };
+        } else {
+          next.push({
+            id: lineIdRef.current + 1,
+            startSeconds: now,
+            endSeconds: now,
+            text,
+            canonical: null,
+            provisional: true,
+          });
+          lineIdRef.current += 1;
+        }
+        return next;
+      });
+    },
+    [elapsedSeconds],
+  );
+
+  const handleCommitted = useCallback(
+    (text: string, words: { text: string; start: number; end: number }[]) => {
+      const now = elapsedSeconds();
+      const start = words.length > 0 ? words[0].start : now;
+      const end = words.length > 0 ? words[words.length - 1].end : now;
+      metricsRef.current.committed.push(Math.max(0, now - end));
+      lastAudioEndRef.current = end;
+      partialSeenRef.current = false;
+      setLiveLines((previous) => {
+        const next = previous.filter((line) => !line.provisional);
+        next.push({
+          id: lineIdRef.current + 1,
+          startSeconds: start,
+          endSeconds: end,
+          text,
+          canonical: null,
+          provisional: false,
+        });
+        lineIdRef.current += 1;
+        return next;
+      });
+      if (lastRollingResultRef.current) {
+        attachSpeakerLabels(lastRollingResultRef.current);
+      }
+    },
+    [attachSpeakerLabels, elapsedSeconds],
+  );
+
+  const startLivePipeline = useCallback(
+    async (recorder: MeetingRecorder) => {
+      const stream = recorder.audioStream;
+      if (!stream) {
+        setLiveWarning("Canlı transkript başlatılamadı — kayıt devam ediyor.");
+        return;
+      }
+      let createdSessionId: string | null = null;
+      try {
+        const session = await createLiveSession();
+        createdSessionId = session.live_session_id;
+        setLiveSessionId(createdSessionId);
+        const { token } = await getRealtimeToken();
+
+        const tracker = new RollingSpeakerTracker({
+          liveSessionId: createdSessionId,
+          speakerCount:
+            liveSpeakerChoice === "auto" ? null : Number(liveSpeakerChoice),
+          send: (request) => sendSpeakerWindow(createdSessionId as string, request),
+          onResult: (result) => attachSpeakerLabels(result),
+          onFailure: () => {
+            setLiveWarning(
+              "Konuşmacı etiketleri şu an alınamıyor; kayıt ve canlı metin devam ediyor.",
+            );
+          },
+        });
+        trackerRef.current = tracker;
+
+        const scribe = new ScribeRealtimeClient({
+          onPartial: handlePartial,
+          onCommitted: handleCommitted,
+          onStatus: (next) => {
+            setRealtimeStatus(next);
+            if (next === "connected") {
+              setLiveWarning(null);
+            } else if (next === "reconnecting" || next === "failed") {
+              setLiveWarning(
+                "Canlı transkript bağlantısı kesildi — kayıt devam ediyor.",
+              );
+            }
+          },
+        });
+        scribeRef.current = scribe;
+
+        const capture = new PcmCapture(stream, {
+          onChunk: (pcm, startSeconds) => {
+            scribe.sendAudio(pcm);
+            trackerRef.current?.push(new Int16Array(pcm), startSeconds);
+          },
+          onError: () => {
+            setLiveWarning("Canlı ses işleme hatası — kayıt devam ediyor.");
+          },
+        });
+        pcmRef.current = capture;
+        await capture.start();
+        scribe.open(token);
+      } catch {
+        if (createdSessionId) {
+          void deleteLiveSession(createdSessionId).catch(() => undefined);
+        }
+        setLiveSessionId(null);
+        setLiveWarning("Canlı transkript başlatılamadı — kayıt devam ediyor.");
+      }
+    },
+    [attachSpeakerLabels, handleCommitted, handlePartial, liveSpeakerChoice],
+  );
+
+  const stopLivePipeline = useCallback(() => {
+    const tracker = trackerRef.current;
+    scribeRef.current?.commit();
+    scribeRef.current?.close();
+    scribeRef.current = null;
+    pcmRef.current?.stop();
+    pcmRef.current = null;
+    tracker?.stop();
+    if (tracker) {
+      setLiveMetrics({
+        partial: median(metricsRef.current.partial),
+        committed: median(metricsRef.current.committed),
+        label: median(metricsRef.current.label),
+        rollingSeconds: tracker.uploadedSeconds,
+        requests: tracker.requestCount,
+      });
+    }
+    setRealtimeStatus("disconnected");
+  }, []);
+
+  // --- recording lifecycle -------------------------------------------------
+
   const handleStart = useCallback(async () => {
     setError(null);
     setProcessingError(null);
@@ -270,27 +509,43 @@ export function RecordingPanel() {
     setUploadedBytes(null);
     setUploadedDuration(null);
     setElapsedMs(0);
+    setLiveLines([]);
+    setLiveWarning(null);
+    setLiveMetrics(null);
+    setRealtimeStatus("idle");
+    lineIdRef.current = 0;
+    lastAudioEndRef.current = null;
+    partialSeenRef.current = false;
+    metricsRef.current = { partial: [], committed: [], label: [] };
     releasePreview();
     setStatus("requesting");
 
     const recorder = recorderRef.current ?? new MeetingRecorder();
     recorderRef.current = recorder;
+    const wantsLive = providerChoice === "elevenlabs" && cloudAcknowledged;
     try {
       const startedSession = await recorder.start();
       startedAtRef.current = Date.now();
       setSession(startedSession);
       setLevelStream(recorder.audioStream ?? null);
       setStatus("recording");
+      if (wantsLive) {
+        // Live failures never stop the recording.
+        await startLivePipeline(recorder);
+      }
     } catch (startError) {
       recorder.dispose();
       setError(describeMicrophoneError(startError));
       setStatus("idle");
     }
-  }, [releasePreview]);
+  }, [cloudAcknowledged, providerChoice, releasePreview, startLivePipeline]);
 
   const handleStop = useCallback(async () => {
     const recorder = recorderRef.current;
     if (!recorder) return;
+    if (providerChoice === "elevenlabs" && cloudAcknowledged) {
+      stopLivePipeline();
+    }
     setStatus("uploading");
     setError(null);
 
@@ -308,6 +563,7 @@ export function RecordingPanel() {
         mimeType: stopped.mimeType,
         durationSeconds: stopped.durationMs / 1000,
         filename: stopped.mimeType.includes("mp4") ? "recording.mp4" : "recording.webm",
+        liveSessionId,
       });
       setMeetingId(uploaded.meeting_id);
       setUploadedBytes(uploaded.input.size_bytes);
@@ -322,7 +578,7 @@ export function RecordingPanel() {
       );
       setStatus("idle");
     }
-  }, []);
+  }, [cloudAcknowledged, liveSessionId, providerChoice, stopLivePipeline]);
 
   const handleProcess = useCallback(async () => {
     if (!meetingId) return;
@@ -344,6 +600,55 @@ export function RecordingPanel() {
     }
   }, [meetingId, speakerChoice, providerChoice]);
 
+  // --- rename ---------------------------------------------------------------
+
+  const handleRenameSave = useCallback(
+    async (displayName: string) => {
+      if (!renameSpeaker) return;
+      const canonical = renameSpeaker;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        if (status === "recording" && liveSessionId) {
+          await setLiveSpeakerAlias(liveSessionId, canonical, displayName);
+        } else if (meetingId) {
+          await setMeetingSpeakerAlias(meetingId, canonical, displayName);
+        }
+        setAliases((previous) => applyAlias(previous, canonical, displayName));
+        setRenameSpeaker(null);
+      } catch (renameFailure) {
+        setRenameError(
+          renameFailure instanceof Error ? renameFailure.message : "Ad kaydedilemedi.",
+        );
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [liveSessionId, meetingId, renameSpeaker, status],
+  );
+
+  const handleRenameReset = useCallback(async () => {
+    if (!renameSpeaker) return;
+    const canonical = renameSpeaker;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      if (status === "recording" && liveSessionId) {
+        await clearLiveSpeakerAlias(liveSessionId, canonical);
+      } else if (meetingId) {
+        await clearMeetingSpeakerAlias(meetingId, canonical);
+      }
+      setAliases((previous) => applyAlias(previous, canonical, null));
+      setRenameSpeaker(null);
+    } catch (renameFailure) {
+      setRenameError(
+        renameFailure instanceof Error ? renameFailure.message : "Ad sıfırlanamadı.",
+      );
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [liveSessionId, meetingId, renameSpeaker, status]);
+
   const busy = status === "requesting" || status === "uploading" || status === "processing";
   const providerOptions =
     providers?.providers ?? [
@@ -355,6 +660,9 @@ export function RecordingPanel() {
         label: "ElevenLabs",
       },
     ];
+  const liveMode = providerChoice === "elevenlabs" && cloudAcknowledged;
+  const liveStatusText = liveWarning ?? deriveLiveStatus(liveLines, realtimeStatus);
+  const canStart = !busy && !(providerChoice === "elevenlabs" && !cloudAcknowledged);
 
   return (
     <section aria-labelledby="recording" className="enter enter-2">
@@ -388,30 +696,173 @@ export function RecordingPanel() {
               <StopIcon className="size-4" />
               Kaydı Durdur
             </button>
+
+            {liveMode ? (
+              <LiveTranscript
+                lines={liveLines}
+                aliases={aliases}
+                status={liveStatusText}
+                warning={liveWarning}
+                onRenameSpeaker={(canonical) => {
+                  setRenameError(null);
+                  setRenameSpeaker(canonical);
+                }}
+              />
+            ) : null}
           </div>
         ) : (
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={handleStart}
-              disabled={busy}
-              className="inline-flex items-center gap-3 rounded-2xl bg-zinc-900 py-2.5 pr-5 pl-2.5 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
-            >
-              <span className="grid size-9 place-items-center rounded-xl bg-white/10 dark:bg-zinc-900/10">
-                <MicIcon className="size-5" />
-              </span>
-              {status === "requesting"
-                ? "Mikrofon izni isteniyor…"
-                : status === "uploading"
-                  ? "Yükleniyor…"
-                  : status === "processing"
-                    ? "İşleniyor…"
-                    : "Kaydı Başlat"}
-            </button>
-            {status === "idle" ? (
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                Kayıt bu cihazda tutulur; yüklemeyi siz başlatırsınız.
-              </span>
+          <div className="mt-4 space-y-5">
+            {status === "idle" || status === "requesting" ? (
+              <>
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Transkripsiyon yöntemi
+                  </legend>
+                  {providerOptions.map((option) => {
+                    const unavailable = !option.available;
+                    const selected = providerChoice === option.id;
+                    return (
+                      <label
+                        key={option.id}
+                        className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition-colors duration-150 ease-out has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-zinc-500 ${
+                          selected
+                            ? "border-zinc-900 bg-zinc-500/5 dark:border-zinc-100"
+                            : "border-zinc-950/10 hover:border-zinc-950/20 dark:border-white/15 dark:hover:border-white/25"
+                        } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
+                      >
+                        <input
+                          type="radio"
+                          name="transcription-provider"
+                          value={option.id}
+                          checked={selected}
+                          disabled={unavailable}
+                          onChange={() => setProviderChoice(option.id)}
+                          className="mt-1 accent-zinc-900 dark:accent-zinc-100"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                            {option.id === "local" ? "Yerel" : option.label}
+                          </span>
+                          <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                            {PROVIDER_DESCRIPTIONS[option.id]}
+                          </span>
+                          {unavailable ? (
+                            <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                              ElevenLabs API yapılandırılmamış.
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </fieldset>
+
+                {providerChoice === "elevenlabs" ? (
+                  <>
+                    <label className="flex items-start gap-3 rounded-xl bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200">
+                      <input
+                        type="checkbox"
+                        checked={cloudAcknowledged}
+                        onChange={(event) => setCloudAcknowledged(event.target.checked)}
+                        className="mt-0.5 accent-amber-600"
+                      />
+                      <span>
+                        Ses kaydının canlı transkript, konuşmacı ayrımı ve nihai transkripsiyon
+                        için ElevenLabs&apos;a gönderileceğini anlıyorum.
+                      </span>
+                    </label>
+
+                    <div className="space-y-2">
+                      <label
+                        htmlFor="live-speaker-count"
+                        className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                      >
+                        Konuşmacı sayısı (canlı)
+                      </label>
+                      <select
+                        id="live-speaker-count"
+                        value={liveSpeakerChoice}
+                        onChange={(event) =>
+                          setLiveSpeakerChoice(
+                            event.target.value as (typeof SPEAKER_OPTIONS)[number],
+                          )
+                        }
+                        className="w-full rounded-xl border border-zinc-950/10 bg-transparent px-3 py-2 text-sm text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 sm:w-40 dark:border-white/15 dark:text-zinc-100"
+                      >
+                        <option value="auto">Otomatik</option>
+                        {SPEAKER_OPTIONS.filter((option) => option !== "auto").map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Bilinen sayı, ElevenLabs için beklenen azami sayıdır; sonuçta daha az
+                        konuşmacı tespit edilebilir.
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl bg-zinc-500/5 px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
+                      {usage?.available ? (
+                        <dl className="flex flex-wrap gap-x-4 gap-y-1">
+                          {usage.tier ? <UsageItem label="Plan" value={usage.tier} /> : null}
+                          {usage.usage != null ? (
+                            <UsageItem label="Kullanım" value={String(usage.usage)} />
+                          ) : null}
+                          {usage.limit != null ? (
+                            <UsageItem label="Limit" value={String(usage.limit)} />
+                          ) : null}
+                          {usage.remaining != null ? (
+                            <UsageItem label="Kalan" value={String(usage.remaining)} />
+                          ) : null}
+                          {usage.reset_at ? (
+                            <UsageItem
+                              label="Yenilenme"
+                              value={new Date(usage.reset_at).toLocaleDateString("tr-TR")}
+                            />
+                          ) : null}
+                        </dl>
+                      ) : (
+                        <p>
+                          Kullanım bilgisi ElevenLabs panelindeki Developers → Analytics → Usage
+                          bölümünden görülebilir.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleStart}
+                    disabled={!canStart}
+                    className="inline-flex items-center gap-3 rounded-2xl bg-zinc-900 py-2.5 pr-5 pl-2.5 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+                  >
+                    <span className="grid size-9 place-items-center rounded-xl bg-white/10 dark:bg-zinc-900/10">
+                      <MicIcon className="size-5" />
+                    </span>
+                    {status === "requesting" ? "Mikrofon izni isteniyor…" : "Kaydı Başlat"}
+                  </button>
+                  {status === "idle" ? (
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {providerChoice === "elevenlabs"
+                        ? "Canlı transkript kayıt sırasında görünür."
+                        : "Kayıt bu cihazda tutulur; yüklemeyi siz başlatırsınız."}
+                    </span>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+
+            {status === "uploading" ? (
+              <button
+                type="button"
+                disabled
+                className="inline-flex items-center gap-2.5 rounded-2xl bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white opacity-60 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                Yükleniyor…
+              </button>
             ) : null}
           </div>
         )}
@@ -457,6 +908,13 @@ export function RecordingPanel() {
               ) : null}
             </div>
 
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              <span>Kayıt sırasında seçilen yöntem:</span>
+              <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 font-medium text-zinc-700 dark:text-zinc-300">
+                {providerChoice === "elevenlabs" ? "ElevenLabs" : "Yerel"}
+              </span>
+            </div>
+
             <div className="space-y-2">
               <label
                 htmlFor="speaker-count"
@@ -485,102 +943,10 @@ export function RecordingPanel() {
               </p>
             </div>
 
-            <fieldset className="space-y-2">
-              <legend className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Transkripsiyon yöntemi
-              </legend>
-              {providerOptions.map((option) => {
-                const unavailable = !option.available;
-                const selected = providerChoice === option.id;
-                return (
-                  <label
-                    key={option.id}
-                    className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition-colors duration-150 ease-out has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-zinc-500 ${
-                      selected
-                        ? "border-zinc-900 bg-zinc-500/5 dark:border-zinc-100"
-                        : "border-zinc-950/10 hover:border-zinc-950/20 dark:border-white/15 dark:hover:border-white/25"
-                    } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="transcription-provider"
-                      value={option.id}
-                      checked={selected}
-                      disabled={unavailable}
-                      onChange={() => setProviderChoice(option.id)}
-                      className="mt-1 accent-zinc-900 dark:accent-zinc-100"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                        {option.id === "local" ? "Yerel" : option.label}
-                      </span>
-                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                        {PROVIDER_DESCRIPTIONS[option.id]}
-                      </span>
-                      {unavailable ? (
-                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
-                          ElevenLabs API yapılandırılmamış.
-                        </span>
-                      ) : null}
-                    </span>
-                  </label>
-                );
-              })}
-            </fieldset>
-
-            {providerChoice === "elevenlabs" ? (
-              <>
-                <label className="flex items-start gap-3 rounded-xl bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200">
-                  <input
-                    type="checkbox"
-                    checked={cloudAcknowledged}
-                    onChange={(event) => setCloudAcknowledged(event.target.checked)}
-                    className="mt-0.5 accent-amber-600"
-                  />
-                  <span>
-                    Ses kaydının transkripsiyon amacıyla ElevenLabs&apos;a gönderileceğini
-                    anlıyorum.
-                  </span>
-                </label>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Konuşmacı sayısı ElevenLabs için beklenen azami sayıdır; sonuçta daha az
-                  konuşmacı tespit edilebilir.
-                </p>
-                <div className="rounded-xl bg-zinc-500/5 px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
-                  {usage?.available ? (
-                    <dl className="flex flex-wrap gap-x-4 gap-y-1">
-                      {usage.tier ? <UsageItem label="Plan" value={usage.tier} /> : null}
-                      {usage.usage != null ? (
-                        <UsageItem label="Kullanım" value={String(usage.usage)} />
-                      ) : null}
-                      {usage.limit != null ? (
-                        <UsageItem label="Limit" value={String(usage.limit)} />
-                      ) : null}
-                      {usage.remaining != null ? (
-                        <UsageItem label="Kalan" value={String(usage.remaining)} />
-                      ) : null}
-                      {usage.reset_at ? (
-                        <UsageItem
-                          label="Yenilenme"
-                          value={new Date(usage.reset_at).toLocaleDateString("tr-TR")}
-                        />
-                      ) : null}
-                    </dl>
-                  ) : (
-                    <p>
-                      Kullanım bilgisi ElevenLabs panelindeki Developers → Analytics → Usage
-                      bölümünden görülebilir.
-                    </p>
-                  )}
-                </div>
-              </>
-            ) : null}
-
             <button
               type="button"
               onClick={handleProcess}
-              disabled={providerChoice === "elevenlabs" && !cloudAcknowledged}
-              className="inline-flex w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 py-3 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              className="inline-flex w-full items-center justify-center rounded-2xl bg-zinc-900 px-5 py-3 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 sm:w-auto dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
             >
               Transkripsiyonu Başlat
             </button>
@@ -611,6 +977,36 @@ export function RecordingPanel() {
                   <MetadataRow label="Yüklenen boyut" value={formatBytes(uploadedBytes)} />
                 ) : null}
                 <MetadataRow label="Toplantı kimliği" value={meetingId} />
+                {liveMetrics ? (
+                  <>
+                    <MetadataRow
+                      label="İlk kısmi metin gecikmesi (medyan)"
+                      value={
+                        liveMetrics.partial == null
+                          ? "—"
+                          : `${liveMetrics.partial.toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="Tamamlanan metin gecikmesi (medyan)"
+                      value={
+                        liveMetrics.committed == null
+                          ? "—"
+                          : `${liveMetrics.committed.toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="Konuşmacı etiketi gecikmesi (medyan)"
+                      value={
+                        liveMetrics.label == null ? "—" : `${liveMetrics.label.toFixed(2)} sn`
+                      }
+                    />
+                    <MetadataRow
+                      label="Kayan pencere istekleri"
+                      value={`${liveMetrics.requests} istek · ${liveMetrics.rollingSeconds.toFixed(1)} sn ses`}
+                    />
+                  </>
+                ) : null}
               </dl>
             </details>
           </div>
@@ -647,6 +1043,21 @@ export function RecordingPanel() {
           </p>
         ) : null}
       </div>
+
+      {renameSpeaker !== null ? (
+        <SpeakerRenameDialog
+          canonical={renameSpeaker}
+          currentName={aliases[renameSpeaker] ?? renameSpeaker}
+          busy={renameBusy}
+          error={renameError}
+          onSave={handleRenameSave}
+          onReset={handleRenameReset}
+          onCancel={() => {
+            setRenameSpeaker(null);
+            setRenameError(null);
+          }}
+        />
+      ) : null}
     </section>
   );
 }

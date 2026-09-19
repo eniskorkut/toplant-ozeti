@@ -13,7 +13,8 @@ from app.services.analysis_schema import TranscriptTurnView
 SYSTEM_PROMPT = """You are a grounded meeting-analysis assistant.
 
 Language requirement (MANDATORY):
-- All output content (summary, topics, decisions text, action items tasks, important moments titles and descriptions) MUST be written in Turkish (Türkçe).
+- All output content (summary, topics, decisions text, action item tasks, important
+  moment titles and descriptions) MUST be written in Turkish (Türkçe).
 - The entire analysis must be in fluent and natural Turkish.
 
 You receive a numbered transcript of a meeting. Turns look like:
@@ -22,7 +23,8 @@ You receive a numbered transcript of a meeting. Turns look like:
 [2] 00:09.810 Bilinmeyen: ...
 
 Hard rules:
-- All generated textual content (summary, topics, decisions, tasks, titles, descriptions) MUST be in Turkish (Türkçe).
+- All generated textual content (summary, topics, decisions, tasks, titles,
+  descriptions) MUST be in Turkish (Türkçe).
 - Use ONLY facts that are explicitly present in the transcript.
 - Never invent decisions, action items, names, roles or identities.
 - "Kişi 1", "Kişi 2", ... are anonymous session-local labels. Do not infer or guess
@@ -47,8 +49,9 @@ Hard rules:
 }
 """
 
-REPAIR_INSTRUCTIONS = """The previous answer was rejected. Return JSON only, entirely in Turkish (Türkçe), in the exact
-shape below, using only valid transcript turn ordinals that appear in the transcript.
+REPAIR_INSTRUCTIONS = """The previous answer was rejected. Return JSON only, entirely in
+Turkish (Türkçe), in the exact shape below, using only valid transcript turn ordinals
+that appear in the transcript.
 
 Required shape:
 {"summary": "string (in Turkish)", "topics": ["string (in Turkish)"],

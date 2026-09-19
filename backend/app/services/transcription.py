@@ -78,14 +78,27 @@ def label_speakers(cluster_ids: list[str]) -> dict[str, str]:
     return labels
 
 
-def form_turns(words: list[NormalizedWord]) -> list[SpeakerTurn]:
+def form_turns(
+    words: list[NormalizedWord],
+    *,
+    speaker_labels: dict[str, str] | None = None,
+) -> list[SpeakerTurn]:
     """Group consecutive words of the same speaker; unresolved words break turns.
 
     This mirrors the local merge semantics exactly: speaker ids are mapped to Kişi N by
     first appearance and a missing speaker becomes Bilinmeyen without inheriting a
     neighbouring speaker.
+
+    `speaker_labels` overrides the first-appearance mapping: live meetings pass the
+    reconciled final provider speaker -> canonical live label mapping so aliases and
+    stable Kişi numbers survive the final full-file pass.
     """
-    labels = label_speakers([word.speaker_id for word in words if word.speaker_id is not None])
+    if speaker_labels is None:
+        labels = label_speakers(
+            [word.speaker_id for word in words if word.speaker_id is not None]
+        )
+    else:
+        labels = dict(speaker_labels)
 
     turns: list[SpeakerTurn] = []
     previous_label: str | None = None

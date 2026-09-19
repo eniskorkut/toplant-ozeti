@@ -264,11 +264,20 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   OpenAI-compatible settings to both services:
   `MEETING_LLM_PROVIDER=openai_compatible`, `MEETING_LLM_BASE_URL=...`,
   `MEETING_LLM_API_KEY=...`, `MEETING_LLM_MODEL=...` (plus optional
-  `MEETING_LLM_JSON_MODE=false`, `MEETING_LLM_TIMEOUT_SECONDS`, `MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
-  Switching models and configuring fallback (`MEETING_LLM_FALLBACK_MODEL`) is config-only.
-  Both OpenCode Go (`https://opencode.ai/zen/go/v1`) and general-purpose endpoints are supported.
-  Without all three required values `POST /api/v1/meetings/{id}/analyze` fails fast with 503
-  instead of queueing a doomed job.
+  `MEETING_LLM_JSON_MODE=false`, `MEETING_LLM_TIMEOUT_SECONDS`, `MEETING_LLM_MAX_TRANSCRIPT_CHARS`,
+  `MEETING_LLM_FALLBACK_MODEL`). Switching models or endpoints (including OpenCode Go) is
+  config-only; see the model selection & fallback notes below. Without all three required
+  values `POST /api/v1/meetings/{id}/analyze` fails fast with 503 instead of queueing a
+  doomed job.
+- **Live ElevenLabs transcript (provider=elevenlabs):** while recording, Scribe v2 Realtime
+  (single-use token minted by `POST /api/v1/transcription/providers/elevenlabs/realtime-token`)
+  streams partial/committed text; rolling 4 s / 1 s-overlap PCM windows are sent to
+  `POST /api/v1/live-transcription/sessions/{id}/speaker-window` and mapped onto stable
+  `Kişi N` labels by temporal overlap (provider speaker ids are request-local). Speaker
+  names typed during recording (`PUT .../speakers/{canonical}/alias`) are meeting-scoped and
+  migrate to the meeting on upload; the final full-file Scribe v2 pass is authoritative and
+  reconciles its speakers onto the live canonical labels. No local ML (whisper/sherpa) takes
+  part in the ElevenLabs live path. Live failure never stops the recording.
 - **Usage/quota:** `GET /api/v1/transcription/providers/elevenlabs/usage` returns only
   provider-returned fields (tier, status, characters used/limit, exact remaining when both
   are present, reset time). It never estimates time from characters and never returns keys,

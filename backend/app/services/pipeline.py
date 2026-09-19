@@ -9,6 +9,7 @@ transcript rows are removed, so a failed job never looks completed.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from sqlalchemy import delete, select, update
@@ -21,8 +22,10 @@ from app.models import (
     MEETING_STATUS_PROCESSING,
     MEETING_STATUS_QUEUED,
     Meeting,
+    MeetingLiveSpeaker,
     TranscriptTurn,
 )
+from app.services.speaker_matching import remap_final_speakers
 from app.services.transcription import ProviderError, build_provider, form_turns
 
 logger = logging.getLogger(__name__)
@@ -87,8 +90,15 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
         if not audio_path.exists():
             raise FileNotFoundError(f"processing audio missing: {audio_path}")
 
+        live_timelines = await _load_live_timelines(session, meeting_id)
+
         output = await asyncio.to_thread(
-            _run_inference, audio_path, requested_speaker_count, settings, requested_provider
+            _run_inference,
+            audio_path,
+            requested_speaker_count,
+            settings,
+            requested_provider,
+            live_timelines,
         )
 
         await session.execute(delete(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id))
@@ -128,16 +138,40 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
         logger.warning("meeting %s failed: %s", meeting_id, _safe_error_message(exc))
 
 
+async def _load_live_timelines(
+    session: AsyncSession, meeting_id: str
+) -> dict[str, list[tuple[float, float]]]:
+    """Canonical live speaker timelines persisted at upload time, if any."""
+    rows = (
+        await session.execute(
+            select(MeetingLiveSpeaker).where(MeetingLiveSpeaker.meeting_id == meeting_id)
+        )
+    ).scalars()
+    timelines: dict[str, list[tuple[float, float]]] = {}
+    for row in rows:
+        try:
+            raw = json.loads(row.intervals_json)
+            timelines[row.canonical_speaker] = [
+                (float(start), float(end)) for start, end in raw
+            ]
+        except (TypeError, ValueError):
+            continue
+    return timelines
+
+
 def _run_inference(
     audio_path,
     requested_speaker_count: int | None,
     settings: Settings,
     requested_provider: str | None = None,
+    live_timelines: dict[str, list[tuple[float, float]]] | None = None,
 ) -> dict:
     """Blocking inference step (runs in a worker thread).
 
     The provider produces normalized words (anonymous speaker ids, possibly absent);
     turn formation is shared by every provider and mirrors the local merge semantics.
+    For live-recorded meetings the final provider speakers are reconciled onto the
+    canonical live labels so stable Kişi numbers and aliases survive the final pass.
     """
     import wave
 
@@ -156,7 +190,18 @@ def _run_inference(
         requested_speaker_count=requested_speaker_count,
         settings=effective_settings,
     )
-    turns = form_turns(result.words)
+
+    speaker_labels: dict[str, str] | None = None
+    if live_timelines and result.provider == "elevenlabs":
+        provider_intervals: dict[str, list[tuple[float, float]]] = {}
+        for word in result.words:
+            if word.speaker_id is None:
+                continue
+            provider_intervals.setdefault(word.speaker_id, []).append((word.start, word.end))
+        if provider_intervals:
+            speaker_labels = remap_final_speakers(live_timelines, provider_intervals)
+
+    turns = form_turns(result.words, speaker_labels=speaker_labels)
 
     unresolved = sum(1 for word in result.words if word.speaker_id is None)
     return {

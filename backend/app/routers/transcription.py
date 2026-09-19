@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.services.elevenlabs_usage import fetch_usage
+from app.services.providers.elevenlabs import create_realtime_token
+from app.services.transcription import (
+    ProviderConfigurationError,
+    ProviderRequestError,
+    ProviderResponseError,
+    ProviderUnavailableError,
+)
 
 router = APIRouter(prefix="/api/v1/transcription", tags=["transcription"])
 
@@ -63,6 +71,43 @@ class ElevenLabsUsageResponse(BaseModel):
     remaining: int | None = None
     reset_at: str | None = None
     reason: str | None = None
+
+
+class RealtimeTokenResponse(BaseModel):
+    token: str
+
+
+@router.post("/providers/elevenlabs/realtime-token", response_model=RealtimeTokenResponse)
+async def elevenlabs_realtime_token(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RealtimeTokenResponse:
+    """Mint a short-lived single-use token for the browser realtime client.
+
+    Only the single-use token is returned; the permanent API key stays server-side,
+    is never logged and is never included in errors.
+    """
+    if not settings.elevenlabs_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ElevenLabs transcription is not configured.",
+        )
+    try:
+        token = await asyncio.to_thread(create_realtime_token, settings)
+    except ProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except ProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ElevenLabs is temporarily unavailable.",
+        ) from exc
+    except (ProviderRequestError, ProviderResponseError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="ElevenLabs rejected the realtime token request.",
+        ) from exc
+    return RealtimeTokenResponse(token=token)
 
 
 @router.get(

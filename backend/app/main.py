@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.db import get_database
 from app.logging_config import configure_logging
+from app.routers.live_transcription import router as live_transcription_router
 from app.routers.meetings import router as meetings_router
 from app.routers.recordings import router as recordings_router
 from app.routers.transcription import router as transcription_router
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(recordings_router)
 app.include_router(meetings_router)
+app.include_router(live_transcription_router)
 app.include_router(transcription_router)
 
 

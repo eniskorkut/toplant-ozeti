@@ -166,7 +166,9 @@ class OpenAICompatibleProvider:
                         timeout=self._timeout,
                     )
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
-                    model_last_error = LlmTransportError(f"provider connection failed: {type(exc).__name__}")
+                    model_last_error = LlmTransportError(
+                        f"provider connection failed: {type(exc).__name__}"
+                    )
                     logger.warning(
                         "analysis provider transport error (model=%s, attempt=%d)",
                         model,
@@ -189,7 +191,8 @@ class OpenAICompatibleProvider:
                     except Exception:
                         pass
                     error = LlmHttpError(
-                        response.status_code, f"provider returned HTTP {response.status_code}{error_detail}"
+                        response.status_code,
+                        f"provider returned HTTP {response.status_code}{error_detail}",
                     )
                     if not error.retryable:
                         # Never retry auth/forbidden or other client errors on this model.

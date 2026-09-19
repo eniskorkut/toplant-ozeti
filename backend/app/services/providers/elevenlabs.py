@@ -30,7 +30,84 @@ from app.services.transcription import (
 logger = logging.getLogger(__name__)
 
 API_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+REALTIME_TOKEN_URL = "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe"
+PCM_WINDOW_FORMAT = "pcm_s16le_16"
 AUDIO_DURATION_TOLERANCE_SECONDS = 1.0
+
+
+def _api_key(settings: Settings) -> str:
+    secret = settings.elevenlabs_api_key
+    api_key = secret.get_secret_value() if secret is not None else ""
+    if not api_key:
+        raise ProviderConfigurationError(
+            "ELEVENLABS_API_KEY is not configured for the elevenlabs provider"
+        )
+    return api_key
+
+
+def create_realtime_token(settings: Settings) -> str:
+    """Mint a single-use realtime token. The permanent key never leaves the server.
+
+    The returned token is short-lived by provider policy and is deliberately never
+    logged, persisted or included in errors.
+    """
+    api_key = _api_key(settings)
+    try:
+        response = httpx.post(
+            REALTIME_TOKEN_URL,
+            headers={"xi-api-key": api_key},
+            timeout=min(15.0, settings.elevenlabs_timeout_seconds),
+        )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        logger.warning("elevenlabs realtime token request failed: %s", type(exc).__name__)
+        raise ProviderUnavailableError(
+            f"ElevenLabs connection problem: {type(exc).__name__}"
+        ) from exc
+
+    ElevenLabsProvider._raise_for_status(response)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ProviderResponseError("ElevenLabs token response was not valid JSON") from exc
+    token = payload.get("token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token.strip():
+        raise ProviderResponseError("ElevenLabs token response did not contain a token")
+    return token
+
+
+def transcribe_pcm_window(
+    pcm_bytes: bytes,
+    *,
+    settings: Settings,
+    requested_speaker_count: int | None = None,
+) -> list[NormalizedWord]:
+    """One rolling-window batch request over raw 16 kHz mono PCM (diarization only).
+
+    The caller treats returned speaker ids as request-local and maps them through
+    temporal overlap; words that carry no speaker id stay without one.
+    """
+    api_key = _api_key(settings)
+    data = ElevenLabsProvider.build_form_data(
+        settings, requested_speaker_count=requested_speaker_count
+    )
+    data["file_format"] = PCM_WINDOW_FORMAT
+    try:
+        response = httpx.post(
+            API_URL,
+            headers={"xi-api-key": api_key},
+            data=data,
+            files={"file": ("window.pcm", pcm_bytes, "application/octet-stream")},
+            timeout=settings.elevenlabs_timeout_seconds,
+        )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        logger.warning("elevenlabs window request failed: %s", type(exc).__name__)
+        raise ProviderUnavailableError(
+            f"ElevenLabs connection problem: {type(exc).__name__}"
+        ) from exc
+
+    ElevenLabsProvider._raise_for_status(response)
+    payload = ElevenLabsProvider._parse_envelope(response)
+    return ElevenLabsProvider.parse_words(payload)
 
 
 class ElevenLabsProvider:
@@ -46,13 +123,7 @@ class ElevenLabsProvider:
         requested_speaker_count: int | None,
         settings: Settings,
     ) -> TranscriptionResult:
-        secret = settings.elevenlabs_api_key
-        api_key = secret.get_secret_value() if secret is not None else ""
-        if not api_key:
-            raise ProviderConfigurationError(
-                "ELEVENLABS_API_KEY is not configured for the elevenlabs provider"
-            )
-
+        api_key = _api_key(settings)
         data = self.build_form_data(
             settings, requested_speaker_count=requested_speaker_count
         )
