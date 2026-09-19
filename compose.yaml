@@ -28,11 +28,6 @@ services:
     environment:
       MEETING_DATA_DIR: /data/meetings
       MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
-      MEETING_LLM_PROVIDER: ${MEETING_LLM_PROVIDER:-openai_compatible}
-      MEETING_LLM_BASE_URL: ${MEETING_LLM_BASE_URL:-}
-      MEETING_LLM_API_KEY: ${MEETING_LLM_API_KEY:-}
-      MEETING_LLM_MODEL: ${MEETING_LLM_MODEL:-}
-      MEETING_LLM_MAX_TRANSCRIPT_CHARS: ${MEETING_LLM_MAX_TRANSCRIPT_CHARS:-120000}
       MEETING_TRANSCRIPTION_PROVIDER: ${MEETING_TRANSCRIPTION_PROVIDER:-local}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
@@ -60,11 +55,6 @@ services:
     environment:
       MEETING_DATA_DIR: /data/meetings
       MEETING_DATABASE_URL: sqlite+aiosqlite:////data/app.db
-      MEETING_LLM_PROVIDER: ${MEETING_LLM_PROVIDER:-openai_compatible}
-      MEETING_LLM_BASE_URL: ${MEETING_LLM_BASE_URL:-}
-      MEETING_LLM_API_KEY: ${MEETING_LLM_API_KEY:-}
-      MEETING_LLM_MODEL: ${MEETING_LLM_MODEL:-}
-      MEETING_LLM_MAX_TRANSCRIPT_CHARS: ${MEETING_LLM_MAX_TRANSCRIPT_CHARS:-120000}
       MEETING_TRANSCRIPTION_PROVIDER: ${MEETING_TRANSCRIPTION_PROVIDER:-local}
     depends_on:
       backend:

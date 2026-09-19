@@ -260,6 +260,15 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   `env_file` with `required: false`, so the app works without it. Never put backend secrets
   in `frontend/.env*` or in `NEXT_PUBLIC_*`; the frontend only learns availability from
   `GET /api/v1/transcription/providers`.
+- **Meeting analysis (grounded LLM):** the same `.env.local` supplies the generic
+  OpenAI-compatible settings to both services:
+  `MEETING_LLM_PROVIDER=openai_compatible`, `MEETING_LLM_BASE_URL=...`,
+  `MEETING_LLM_API_KEY=...`, `MEETING_LLM_MODEL=...` (plus optional
+  `MEETING_LLM_JSON_MODE=false`, `MEETING_LLM_TIMEOUT_SECONDS`, `MEETING_LLM_MAX_TRANSCRIPT_CHARS`).
+  Switching models is config-only. The coding-agent endpoint `opencode.ai/zen/go/v1` stays
+  rejected by the eligibility guard; use a general-purpose (pay-as-you-go) endpoint.
+  Without all three required values `POST /api/v1/meetings/{id}/analyze` fails fast with 503
+  instead of queueing a doomed job.
 - **Usage/quota:** `GET /api/v1/transcription/providers/elevenlabs/usage` returns only
   provider-returned fields (tier, status, characters used/limit, exact remaining when both
   are present, reset time). It never estimates time from characters and never returns keys,
