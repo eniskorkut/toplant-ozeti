@@ -33,11 +33,13 @@ app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=li
 
 # Centralized CORS configuration: the frontend runs natively on the host while
 # the backend runs in Docker, so they are always different origins in dev.
+# DELETE (meeting deletion) and PUT (speaker aliases) are real browser calls and
+# must pass the preflight, otherwise fetch fails with "Failed to fetch".
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Accept"],
 )
 
