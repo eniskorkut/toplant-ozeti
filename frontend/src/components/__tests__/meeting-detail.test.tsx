@@ -10,6 +10,9 @@ const getTranscript = vi.fn();
 const getAnalysis = vi.fn();
 const startAnalysis = vi.fn();
 const processMeeting = vi.fn();
+const getMeetingSpeakers = vi.fn();
+const setMeetingSpeakerAlias = vi.fn();
+const clearMeetingSpeakerAlias = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -20,6 +23,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getAnalysis: (...args: unknown[]) => getAnalysis(...args),
     startAnalysis: (...args: unknown[]) => startAnalysis(...args),
     processMeeting: (...args: unknown[]) => processMeeting(...args),
+    getMeetingSpeakers: (...args: unknown[]) => getMeetingSpeakers(...args),
+    setMeetingSpeakerAlias: (...args: unknown[]) => setMeetingSpeakerAlias(...args),
+    clearMeetingSpeakerAlias: (...args: unknown[]) => clearMeetingSpeakerAlias(...args),
     meetingAudioUrl: (id: string) => `http://localhost:8000/api/v1/meetings/${id}/audio`,
   };
 });
@@ -86,6 +92,16 @@ beforeEach(() => {
   getTranscript.mockResolvedValue(TRANSCRIPT);
   getAnalysis.mockRejectedValue(new ApiError(404, "Analysis not found"));
   startAnalysis.mockResolvedValue({ ...COMPLETED_ANALYSIS, status: "queued" });
+  getMeetingSpeakers.mockResolvedValue({
+    meeting_id: "m1",
+    speakers: ["Kişi 1", "Kişi 2"],
+    aliases: {},
+  });
+  setMeetingSpeakerAlias.mockResolvedValue({
+    canonical_speaker: "Kişi 1",
+    display_name: "Ahmet",
+  });
+  clearMeetingSpeakerAlias.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -280,5 +296,49 @@ describe("MeetingDetail", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("MeetingDetail speaker aliases", () => {
+  it("displays meeting-local aliases in the transcript and analysis owner", async () => {
+    getMeetingSpeakers.mockResolvedValue({
+      meeting_id: "m1",
+      speakers: ["Kişi 1", "Kişi 2"],
+      aliases: { "Kişi 1": "Ahmet", "Kişi 2": "Ayşe" },
+    });
+    getAnalysis.mockResolvedValue(COMPLETED_ANALYSIS);
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("Ahmet")).toBeTruthy();
+    expect(screen.getByText("Ayşe")).toBeTruthy();
+    // Action item owner is canonical "Kişi 2" internally, displayed as "Ayşe".
+    expect(await screen.findByText(/Ayşe · cuma/)).toBeTruthy();
+  });
+
+  it("renames a speaker for this meeting only and keeps other meetings clean", async () => {
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Merhaba");
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Kişi 1 · Konuşmacı adını düzenle/ })[0],
+    );
+    fireEvent.change(screen.getByLabelText("Ad"), { target: { value: "Ahmet" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydet" }));
+    });
+
+    expect(setMeetingSpeakerAlias).toHaveBeenCalledWith("m1", "Kişi 1", "Ahmet");
+    expect(await screen.findByText("Ahmet")).toBeTruthy();
+
+    // Resetting restores the canonical label through the same dialog.
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Ahmet · Konuşmacı adını düzenle/ })[0],
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /sıfırla/ }));
+    });
+    expect(clearMeetingSpeakerAlias).toHaveBeenCalledWith("m1", "Kişi 1");
+    expect(await screen.findByText("Kişi 1")).toBeTruthy();
   });
 });

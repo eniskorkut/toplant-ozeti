@@ -4,13 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AudioPlayer } from "@/components/audio-player";
 import { Chip, StatusChip } from "@/components/chips";
+import { SpeakerRenameDialog } from "@/components/speaker-rename-dialog";
 import {
   ApiError,
+  clearMeetingSpeakerAlias,
   getAnalysis,
   getMeeting,
+  getMeetingSpeakers,
   getTranscript,
   meetingAudioUrl,
   processMeeting,
+  setMeetingSpeakerAlias,
   startAnalysis,
   type MeetingAnalysis,
   type MeetingStatus,
@@ -18,6 +22,12 @@ import {
 } from "@/lib/api";
 import { formatDuration, formatMeetingDate, formatTimestamp, statusLabel } from "@/lib/format";
 import { CheckIcon, CopyIcon } from "@/lib/icons";
+import {
+  applyAlias,
+  canonicalSpeakerIndex,
+  resolveSpeakerDisplay,
+  type SpeakerAliases,
+} from "@/lib/speakers";
 
 const POLL_INTERVAL_MS = 2000;
 const PROVIDER_BADGES: Record<string, string> = {
@@ -37,10 +47,44 @@ const SPEAKER_TONES = [
   "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
 ];
 
-function speakerTone(speaker: string, transcript: Transcript): string {
-  const index = transcript.speakers.indexOf(speaker);
-  if (index < 0) return "";
-  return SPEAKER_TONES[index % SPEAKER_TONES.length];
+function SpeakerBadge({
+  speaker,
+  aliases,
+  onRename,
+}: {
+  speaker: string;
+  aliases: SpeakerAliases;
+  onRename: (canonical: string) => void;
+}) {
+  const display = resolveSpeakerDisplay(speaker, aliases);
+  const toneIndex = canonicalSpeakerIndex(speaker);
+  const tone =
+    toneIndex >= 0
+      ? SPEAKER_TONES[toneIndex % SPEAKER_TONES.length]
+      : "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400";
+  return (
+    <button
+      type="button"
+      onClick={() => onRename(speaker)}
+      aria-label={`${display} · Konuşmacı adını düzenle`}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors duration-150 ease-out hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 ${tone}`}
+    >
+      {display}
+      <svg
+        aria-hidden="true"
+        className="size-3 opacity-60"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+        viewBox="0 0 24 24"
+      >
+        <path d="M4 20h4L19 9l-4-4L4 16z" />
+        <path d="M14 6l4 4" />
+      </svg>
+    </button>
+  );
 }
 
 function TimestampButton({
@@ -130,6 +174,10 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
+  const [aliases, setAliases] = useState<SpeakerAliases>({});
+  const [renameSpeaker, setRenameSpeaker] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const seekTo = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -149,6 +197,13 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
         if (cancelled) return;
         setMeeting(status);
         setLoadError(null);
+
+        try {
+          const speakers = await getMeetingSpeakers(meetingId);
+          if (!cancelled) setAliases(speakers.aliases);
+        } catch {
+          // Aliases are display sugar: never block the page on them.
+        }
 
         if (status.status === "completed") {
           const turns = await getTranscript(meetingId);
@@ -259,6 +314,45 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
       setAnalysisBusy(false);
     }
   }, [meetingId]);
+
+  const handleRenameSave = useCallback(
+    async (displayName: string) => {
+      if (!renameSpeaker) return;
+      const canonical = renameSpeaker;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        await setMeetingSpeakerAlias(meetingId, canonical, displayName);
+        setAliases((previous) => applyAlias(previous, canonical, displayName));
+        setRenameSpeaker(null);
+      } catch (renameFailure) {
+        setRenameError(
+          renameFailure instanceof Error ? renameFailure.message : "Ad kaydedilemedi.",
+        );
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [meetingId, renameSpeaker],
+  );
+
+  const handleRenameReset = useCallback(async () => {
+    if (!renameSpeaker) return;
+    const canonical = renameSpeaker;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await clearMeetingSpeakerAlias(meetingId, canonical);
+      setAliases((previous) => applyAlias(previous, canonical, null));
+      setRenameSpeaker(null);
+    } catch (renameFailure) {
+      setRenameError(
+        renameFailure instanceof Error ? renameFailure.message : "Ad sıfırlanamadı.",
+      );
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [meetingId, renameSpeaker]);
 
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Yükleniyor…</p>;
@@ -371,14 +465,14 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
                           {turn.speaker}
                         </span>
                       ) : (
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${speakerTone(
-                            turn.speaker,
-                            transcript,
-                          )}`}
-                        >
-                          {turn.speaker}
-                        </span>
+                        <SpeakerBadge
+                          speaker={turn.speaker}
+                          aliases={aliases}
+                          onRename={(canonical) => {
+                            setRenameError(null);
+                            setRenameSpeaker(canonical);
+                          }}
+                        />
                       )
                     ) : (
                       <span className="sr-only">{turn.speaker}</span>
@@ -504,7 +598,9 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
                         <span className="text-sm text-zinc-900 dark:text-zinc-100">
                           {item.task}
                           <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                            {item.owner ?? "Sorumlu belirtilmemiş"}
+                            {item.owner
+                              ? resolveSpeakerDisplay(item.owner, aliases)
+                              : "Sorumlu belirtilmemiş"}
                             {item.due_date_text ? ` · ${item.due_date_text}` : ""}
                           </span>
                         </span>
@@ -536,6 +632,21 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             </>
           ) : null}
         </section>
+      ) : null}
+
+      {renameSpeaker !== null ? (
+        <SpeakerRenameDialog
+          canonical={renameSpeaker}
+          currentName={aliases[renameSpeaker] ?? renameSpeaker}
+          busy={renameBusy}
+          error={renameError}
+          onSave={handleRenameSave}
+          onReset={handleRenameReset}
+          onCancel={() => {
+            setRenameSpeaker(null);
+            setRenameError(null);
+          }}
+        />
       ) : null}
     </div>
   );

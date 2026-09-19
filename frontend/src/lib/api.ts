@@ -64,6 +64,8 @@ export type UploadRecordingOptions = {
   mimeType: string;
   durationSeconds: number;
   filename: string;
+  /** When present, live-session aliases/timelines migrate onto the new meeting. */
+  liveSessionId?: string | null;
 };
 
 export async function uploadRecording(
@@ -74,6 +76,9 @@ export async function uploadRecording(
   form.append("audio", blob, options.filename);
   form.append("mime_type", options.mimeType);
   form.append("client_duration_seconds", options.durationSeconds.toFixed(3));
+  if (options.liveSessionId) {
+    form.append("live_session_id", options.liveSessionId);
+  }
   return request<RecordingCreated>("/api/recordings", { method: "POST", body: form });
 }
 
@@ -251,4 +256,161 @@ export function startAnalysis(meetingId: string): Promise<MeetingAnalysis> {
 
 export function meetingAudioUrl(meetingId: string): string {
   return `${getApiBaseUrl()}/api/v1/meetings/${meetingId}/audio`;
+}
+
+// --- live transcription (ElevenLabs) ----------------------------------------
+
+export type LiveSpeakerState = {
+  canonical_speaker: string;
+  display_name: string;
+  speech_seconds: number;
+};
+
+export type LiveSessionState = {
+  live_session_id: string;
+  windows_received: number;
+  rolling_seconds: number;
+  label_switches: number;
+  speakers: LiveSpeakerState[];
+  aliases: Record<string, string>;
+};
+
+export type RealtimeToken = { token: string };
+
+export async function getRealtimeToken(): Promise<RealtimeToken> {
+  return request<RealtimeToken>("/api/v1/transcription/providers/elevenlabs/realtime-token", {
+    method: "POST",
+  });
+}
+
+export async function createLiveSession(): Promise<{ live_session_id: string }> {
+  return request<{ live_session_id: string }>("/api/v1/live-transcription/sessions", {
+    method: "POST",
+  });
+}
+
+export async function deleteLiveSession(liveSessionId: string): Promise<void> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/api/v1/live-transcription/sessions/${liveSessionId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
+}
+
+export async function getLiveSession(liveSessionId: string): Promise<LiveSessionState> {
+  return request<LiveSessionState>(`/api/v1/live-transcription/sessions/${liveSessionId}`);
+}
+
+export type SpeakerAssignment = {
+  canonical_speaker: string;
+  is_new: boolean;
+  confidence: number | null;
+  start: number;
+  end: number;
+  speech_seconds: number;
+};
+
+export type SpeakerWindowResult = {
+  sequence: number;
+  window: [number, number];
+  assignments: SpeakerAssignment[];
+  new_speakers: string[];
+  provider_speakers: number;
+  latency_seconds: number;
+  rolling_seconds: number;
+  label_switches: number;
+};
+
+export type SpeakerWindowRequest = {
+  pcm: Blob;
+  startSeconds: number;
+  endSeconds: number;
+  sequence: number;
+  speakerCount: number | null;
+};
+
+export async function sendSpeakerWindow(
+  liveSessionId: string,
+  options: SpeakerWindowRequest,
+): Promise<SpeakerWindowResult> {
+  const form = new FormData();
+  form.append("pcm", options.pcm, "window.pcm");
+  form.append("start_seconds", options.startSeconds.toFixed(3));
+  form.append("end_seconds", options.endSeconds.toFixed(3));
+  form.append("sequence", String(options.sequence));
+  if (options.speakerCount !== null) {
+    form.append("speaker_count", String(options.speakerCount));
+  }
+  return request<SpeakerWindowResult>(
+    `/api/v1/live-transcription/sessions/${liveSessionId}/speaker-window`,
+    { method: "POST", body: form },
+  );
+}
+
+export async function setLiveSpeakerAlias(
+  liveSessionId: string,
+  canonicalSpeaker: string,
+  displayName: string,
+): Promise<{ canonical_speaker: string; display_name: string }> {
+  return request(
+    `/api/v1/live-transcription/sessions/${liveSessionId}/speakers/${encodeURIComponent(canonicalSpeaker)}/alias`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    },
+  );
+}
+
+export async function clearLiveSpeakerAlias(
+  liveSessionId: string,
+  canonicalSpeaker: string,
+): Promise<void> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/api/v1/live-transcription/sessions/${liveSessionId}/speakers/${encodeURIComponent(canonicalSpeaker)}/alias`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
+}
+
+export type MeetingSpeakers = {
+  meeting_id: string;
+  speakers: string[];
+  aliases: Record<string, string>;
+};
+
+export async function getMeetingSpeakers(meetingId: string): Promise<MeetingSpeakers> {
+  return request<MeetingSpeakers>(`/api/v1/meetings/${meetingId}/speakers`);
+}
+
+export async function setMeetingSpeakerAlias(
+  meetingId: string,
+  canonicalSpeaker: string,
+  displayName: string,
+): Promise<{ canonical_speaker: string; display_name: string }> {
+  return request(
+    `/api/v1/meetings/${meetingId}/speakers/${encodeURIComponent(canonicalSpeaker)}/alias`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    },
+  );
+}
+
+export async function clearMeetingSpeakerAlias(
+  meetingId: string,
+  canonicalSpeaker: string,
+): Promise<void> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/api/v1/meetings/${meetingId}/speakers/${encodeURIComponent(canonicalSpeaker)}/alias`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
 }

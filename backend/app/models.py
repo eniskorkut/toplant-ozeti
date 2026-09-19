@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 UNKNOWN_SPEAKER = "Bilinmeyen"
@@ -117,3 +117,48 @@ class TranscriptTurn(Base):
     text: Mapped[str] = mapped_column(Text)
 
     meeting: Mapped[Meeting] = relationship(back_populates="turns")
+
+
+class MeetingSpeakerAlias(Base):
+    """Meeting-local display alias for one canonical speaker label.
+
+    Display-only: no global person id, no embedding, no cross-meeting relation.
+    Deleting the meeting removes its aliases (FK cascade).
+    """
+
+    __tablename__ = "meeting_speaker_aliases"
+    __table_args__ = (
+        UniqueConstraint("meeting_id", "canonical_speaker", name="uq_meeting_speaker_alias"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    meeting_id: Mapped[str] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), index=True
+    )
+    canonical_speaker: Mapped[str] = mapped_column(String(32))
+    display_name: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class MeetingLiveSpeaker(Base):
+    """Canonical speaker timelines captured during a live ElevenLabs recording.
+
+    Timestamps only (JSON list of [start, end] intervals) so the final full-file
+    Scribe pass can map its own provider speakers onto the live canonical labels.
+    Never audio, never embeddings.
+    """
+
+    __tablename__ = "meeting_live_speakers"
+    __table_args__ = (
+        UniqueConstraint("meeting_id", "canonical_speaker", name="uq_meeting_live_speaker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    meeting_id: Mapped[str] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), index=True
+    )
+    canonical_speaker: Mapped[str] = mapped_column(String(32))
+    intervals_json: Mapped[str] = mapped_column(Text)

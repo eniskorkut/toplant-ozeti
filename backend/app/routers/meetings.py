@@ -28,6 +28,15 @@ from app.models import (
 )
 from app.services.analysis_pipeline import payload_from_row
 from app.services.llm_provider import LlmConfigurationError, build_provider
+from app.services.speaker_aliases import (
+    AliasValidationError,
+    clear_alias,
+    list_aliases,
+    set_alias,
+    speaker_labels_in_transcript,
+    validate_canonical_speaker,
+    validate_display_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +247,91 @@ async def list_meetings(
         for meeting, turns, analysis_status in rows
     ]
     return MeetingList(meetings=meetings, count=len(meetings))
+
+
+class AliasIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=50)
+
+
+class MeetingSpeakersOut(BaseModel):
+    meeting_id: str
+    speakers: list[str]
+    aliases: dict[str, str]
+
+
+@router.get("/{meeting_id}/speakers", response_model=MeetingSpeakersOut)
+async def get_meeting_speakers(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> MeetingSpeakersOut:
+    """Canonical speaker labels of this meeting plus its display aliases."""
+    await _get_meeting(session, meeting_id)
+    labels = await speaker_labels_in_transcript(session, meeting_id)
+    aliases = await list_aliases(session, meeting_id)
+    return MeetingSpeakersOut(
+        meeting_id=meeting_id,
+        speakers=sorted(labels | set(aliases), key=_speaker_sort_key),
+        aliases=aliases,
+    )
+
+
+@router.put("/{meeting_id}/speakers/{canonical_speaker}/alias", response_model=dict)
+async def set_meeting_speaker_alias(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    canonical_speaker: Annotated[str, PathParam(min_length=1, max_length=32)],
+    payload: AliasIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    await _get_meeting(session, meeting_id)
+    try:
+        label = validate_canonical_speaker(canonical_speaker)
+        display_name = validate_display_name(payload.display_name)
+    except AliasValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    existing_labels = await speaker_labels_in_transcript(session, meeting_id)
+    aliases = await list_aliases(session, meeting_id)
+    if existing_labels and label not in existing_labels and label not in aliases:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Canonical speaker is not present in this meeting",
+        )
+
+    await set_alias(
+        session, meeting_id=meeting_id, canonical_speaker=label, display_name=display_name
+    )
+    return {"canonical_speaker": label, "display_name": display_name}
+
+
+@router.delete(
+    "/{meeting_id}/speakers/{canonical_speaker}/alias",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def reset_meeting_speaker_alias(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    canonical_speaker: Annotated[str, PathParam(min_length=1, max_length=32)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    await _get_meeting(session, meeting_id)
+    try:
+        label = validate_canonical_speaker(canonical_speaker)
+    except AliasValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    await clear_alias(session, meeting_id=meeting_id, canonical_speaker=label)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _speaker_sort_key(label: str) -> tuple[int, str]:
+    if label.startswith("Kişi "):
+        try:
+            return (int(label.split(" ", 1)[1]), label)
+        except ValueError:
+            return (999, label)
+    return (1000, label)
 
 
 @router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
