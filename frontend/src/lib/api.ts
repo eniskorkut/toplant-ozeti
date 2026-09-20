@@ -308,7 +308,8 @@ export async function getLiveSession(liveSessionId: string): Promise<LiveSession
 }
 
 export type SpeakerAssignment = {
-  canonical_speaker: string;
+  canonical_speaker: string | null;
+  speaker_state?: "pending" | "temporally_confirmed" | "final";
   is_new: boolean;
   confidence: number | null;
   evidence: string;

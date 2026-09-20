@@ -391,21 +391,86 @@ def remap_final_speakers(
     canonical_intervals: dict[str, list[Interval]],
     provider_intervals: dict[str, list[Interval]],
 ) -> dict[str, str]:
-    """Whole-meeting mapping of final provider speakers onto canonical live labels.
+    """Whole-meeting mapping of final provider speakers onto dense canonical labels.
 
-    Confident matches keep the live canonical label (and therefore any alias).
-    Unmatched final speakers get fresh Kişi N labels: a possibly wrong alias is
-    never applied to an unrelated speaker.
+    1. Matches final provider speakers against confirmed live canonical speakers
+       via maximum-weight bipartite matching with confidence and margin gating.
+    2. Guarantees the final canonical speaker set is strictly dense:
+       Kişi 1, Kişi 2, ..., Kişi M (where M = len(provider_intervals)).
+    3. Confident matches preserve their live canonical label (and alias) whenever
+       within the dense target pool.
+    4. Unmatched or ambiguous final speakers receive the next unused Kişi label
+       in order of first appearance.
+    5. Discards any abandoned or out-of-range provisional identities (no gaps,
+       never Kişi 5 when M=2).
     """
-    matches, unmatched, ambiguous = match_speakers(canonical_intervals, provider_intervals)
-    # Ambiguous finals are safer as fresh labels than as a possibly wrong alias.
-    unmatched = unmatched + ambiguous
-    mapping: dict[str, str] = {
-        provider: match.canonical_speaker for provider, match in matches.items()
-    }
-    used = set(canonical_intervals) | set(mapping.values())
-    for provider_name in unmatched:
-        label = next_canonical_label(used)
-        used.add(label)
-        mapping[provider_name] = label
-    return mapping
+    total_final = len(provider_intervals)
+    if total_final == 0:
+        return {}
+
+    matches, unmatched, ambiguous = match_speakers(
+        canonical_intervals, provider_intervals
+    )
+    unmatched_set = set(unmatched) | set(ambiguous)
+
+    # Final provider speakers ordered by first speech appearance in audio
+    provider_by_appearance = sorted(
+        provider_intervals.keys(),
+        key=lambda p: min((start for start, _ in provider_intervals[p]), default=0.0),
+    )
+
+    dense_target_pool = [f"Kişi {i}" for i in range(1, total_final + 1)]
+    assigned_mapping: dict[str, str] = {}
+    used_labels: set[str] = set()
+
+    # Step 1: Assign confident matches if the matched label is in the dense pool
+    # and not already taken. Strongest overlap evidence wins.
+    sorted_matches = sorted(
+        matches.items(),
+        key=lambda item: item[1].overlap_seconds,
+        reverse=True,
+    )
+    for provider_name, match in sorted_matches:
+        cand_label = match.canonical_speaker
+        if cand_label in dense_target_pool and cand_label not in used_labels:
+            assigned_mapping[provider_name] = cand_label
+            used_labels.add(cand_label)
+        else:
+            unmatched_set.add(provider_name)
+
+    # Step 2: For all remaining provider speakers (in order of first appearance),
+    # allocate the next available label from dense_target_pool.
+    remaining_providers = [p for p in provider_by_appearance if p not in assigned_mapping]
+    available_labels = [label for label in dense_target_pool if label not in used_labels]
+
+    for p, label in zip(remaining_providers, available_labels, strict=True):
+        assigned_mapping[p] = label
+        used_labels.add(label)
+
+    return assigned_mapping
+
+
+def reconcile_final_aliases(
+    canonical_intervals: dict[str, list[Interval]],
+    provider_intervals: dict[str, list[Interval]],
+    live_aliases: dict[str, str],
+) -> dict[str, str]:
+    """Preserve aliases only when the live canonical speaker confidently mapped to a final speaker.
+
+    Ambiguous or unmatched speakers never inherit an alias. Prefer losing an
+    uncertain alias over misidentifying a real person.
+    """
+    matches, unmatched, ambiguous = match_speakers(
+        canonical_intervals, provider_intervals
+    )
+    mapping = remap_final_speakers(canonical_intervals, provider_intervals)
+
+    final_aliases: dict[str, str] = {}
+    for provider_name, match in matches.items():
+        live_label = match.canonical_speaker
+        if live_label in live_aliases:
+            final_label = mapping.get(provider_name)
+            if final_label:
+                final_aliases[final_label] = live_aliases[live_label]
+    return final_aliases
+

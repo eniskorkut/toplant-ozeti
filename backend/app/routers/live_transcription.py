@@ -57,7 +57,8 @@ class LiveSessionCreated(BaseModel):
 
 
 class SpeakerAssignment(BaseModel):
-    canonical_speaker: str
+    canonical_speaker: str | None = None
+    speaker_state: str = "pending"
     is_new: bool
     confidence: float | None = None
     evidence: str = "overlap"

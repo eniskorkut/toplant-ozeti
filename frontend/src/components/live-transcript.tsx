@@ -60,9 +60,14 @@ export function LiveTranscript({
   return (
     <div className="mt-4 rounded-xl bg-zinc-500/5 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
-          Canlı transkript
-        </h3>
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+            Canlı transkript
+          </h3>
+          <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+            · Konuşmacı etiketleri kayıt sırasında tahminidir.
+          </span>
+        </div>
         <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
           <span
             className={`size-1.5 rounded-full ${status === "Dinleniyor" ? "bg-red-500" : "bg-zinc-400"}`}
@@ -116,6 +121,7 @@ export function LiveTranscript({
                   <button
                     type="button"
                     onClick={() => onRenameSpeaker(line.canonical as string)}
+                    title="Canlı konuşmacı etiketi (tahmini)"
                     aria-label={`${display} · Konuşmacı adını düzenle`}
                     className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors duration-150 ease-out hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 ${tone}`}
                   >

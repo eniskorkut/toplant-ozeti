@@ -40,6 +40,11 @@ MAX_INTERVALS_PER_SPEAKER = 4_000
 # snapshots. One snapshot alone is never enough: that is what used to create
 # runaway Kişi 5/8/10 labels.
 MIN_CANDIDATE_SNAPSHOTS = 2
+# Temporal evidence horizon: when a known confirmed speaker has been silent
+# longer than this lookback window, temporal continuity is lost. Unmatched
+# clusters appearing during this period must NOT mint new Kişi N labels, but
+# remain pending ("Konuşmacı belirleniyor") until final full-file reconciliation.
+TEMPORAL_HORIZON_SECONDS = 12.0
 # Conservative confirmation: an existing canonical speaker is only confirmed
 # when matched via temporal overlap with a decisive margin against competing
 # candidates. Weak disjoint merges or pause gaps remain provisional until
@@ -275,22 +280,38 @@ class LiveSessionStore:
                 confirmed = self._is_confirmed(session, label, stable, match=match)
                 if confirmed:
                     session.confirmed_labels_set.add(label)
-                assignments.append(
-                    {
-                        "canonical_speaker": label,
-                        "is_new": False,
-                        "confidence": match.ratio,
-                        "evidence": match.evidence,
-                        "provisional": not confirmed,
-                        "start": round(min(start for start, _ in stable), 3),
-                        "end": round(max(end for _, end in stable), 3),
-                        "speech_seconds": round(total_seconds(stable), 3),
-                    }
-                )
+                    assignments.append(
+                        {
+                            "canonical_speaker": label,
+                            "speaker_state": "temporally_confirmed",
+                            "is_new": False,
+                            "confidence": match.ratio,
+                            "evidence": match.evidence,
+                            "provisional": False,
+                            "start": round(min(start for start, _ in stable), 3),
+                            "end": round(max(end for _, end in stable), 3),
+                            "speech_seconds": round(total_seconds(stable), 3),
+                        }
+                    )
+                else:
+                    assignments.append(
+                        {
+                            "canonical_speaker": None,
+                            "speaker_state": "pending",
+                            "is_new": False,
+                            "confidence": match.ratio,
+                            "evidence": match.evidence,
+                            "provisional": True,
+                            "start": round(min(start for start, _ in stable), 3),
+                            "end": round(max(end for _, end in stable), 3),
+                            "speech_seconds": round(total_seconds(stable), 3),
+                        }
+                    )
             if tail:
                 assignments.append(
                     {
-                        "canonical_speaker": label,
+                        "canonical_speaker": None,
+                        "speaker_state": "pending",
                         "is_new": False,
                         "confidence": match.ratio,
                         "evidence": match.evidence,
@@ -305,7 +326,9 @@ class LiveSessionStore:
         # become canonical speakers (first appearance wins, numbering stays dense).
         promoted: list[str] = []
         for index, candidate in enumerate(session.candidates):
-            if not self._may_promote(session):
+            if not self._may_promote(
+                session, window=window, matches=matches, provider_intervals=provider_intervals
+            ):
                 break
             if candidate.seen_snapshots < MIN_CANDIDATE_SNAPSHOTS:
                 continue
@@ -338,6 +361,7 @@ class LiveSessionStore:
                 assignments.append(
                     {
                         "canonical_speaker": label,
+                        "speaker_state": "temporally_confirmed",
                         "is_new": True,
                         "confidence": None,
                         "evidence": "promoted",
@@ -350,7 +374,8 @@ class LiveSessionStore:
             if tail:
                 assignments.append(
                     {
-                        "canonical_speaker": label,
+                        "canonical_speaker": None,
+                        "speaker_state": "pending",
                         "is_new": True,
                         "confidence": None,
                         "evidence": "promoted",
@@ -407,10 +432,67 @@ class LiveSessionStore:
             return False
         return match.margin >= CONFIRM_MARGIN_SECONDS
 
-    def _may_promote(self, session: LiveSession) -> bool:
-        if session.max_speakers is None:
-            return True
-        return len(session.speakers) < session.max_speakers
+    def _speaker_last_active(
+        self,
+        session: LiveSession,
+        label: str,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> float | None:
+        """Find the latest active timestamp for a confirmed speaker."""
+        last_ends: list[float] = []
+        speaker = session.speakers.get(label)
+        if speaker and speaker.committed:
+            last_ends.append(max(end for _, end in speaker.committed))
+        if matches and provider_intervals:
+            for prov_id, match in matches.items():
+                if match.canonical_speaker == label and prov_id in provider_intervals:
+                    spans = provider_intervals[prov_id]
+                    if spans:
+                        last_ends.append(max(end for _, end in spans))
+        return max(last_ends) if last_ends else None
+
+    def _has_silent_known_speaker(
+        self,
+        session: LiveSession,
+        window: Interval,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> bool:
+        """True if any confirmed speaker has been silent for longer than the lookback horizon."""
+        if not session.confirmed_labels_set:
+            return False
+        window_start = window[0]
+        for label in session.confirmed_labels_set:
+            last_active = self._speaker_last_active(
+                session, label, matches=matches, provider_intervals=provider_intervals
+            )
+            if last_active is None:
+                continue
+            # If the known speaker's last speech ended more than TEMPORAL_HORIZON_SECONDS
+            # before the current window start, continuity for that voice has expired.
+            if (window_start - last_active) > TEMPORAL_HORIZON_SECONDS:
+                return True
+        return False
+
+    def _may_promote(
+        self,
+        session: LiveSession,
+        window: Interval | None = None,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> bool:
+        if session.max_speakers is not None and len(session.speakers) >= session.max_speakers:
+            return False
+        return not (
+            window is not None
+            and self._has_silent_known_speaker(
+                session, window, matches=matches, provider_intervals=provider_intervals
+            )
+        )
 
     def _register_candidate(
         self, session: LiveSession, spans: list[Interval], sequence: int

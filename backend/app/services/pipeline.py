@@ -23,9 +23,11 @@ from app.models import (
     MEETING_STATUS_QUEUED,
     Meeting,
     MeetingLiveSpeaker,
+    MeetingSpeakerAlias,
     TranscriptTurn,
 )
-from app.services.speaker_matching import remap_final_speakers
+from app.services.speaker_aliases import list_aliases
+from app.services.speaker_matching import reconcile_final_aliases, remap_final_speakers
 from app.services.transcription import ProviderError, build_provider, form_turns
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,9 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
             raise FileNotFoundError(f"processing audio missing: {audio_path}")
 
         live_timelines = await _load_live_timelines(session, meeting_id)
+        live_aliases = (
+            await list_aliases(session, meeting_id) if live_timelines else None
+        )
 
         output = await asyncio.to_thread(
             _run_inference,
@@ -99,6 +104,7 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
             settings,
             requested_provider,
             live_timelines,
+            live_aliases,
         )
 
         await session.execute(delete(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id))
@@ -113,6 +119,18 @@ async def process_meeting(session: AsyncSession, meeting: Meeting, settings: Set
                     text=turn["text"],
                 )
             )
+        if output.get("final_aliases") is not None:
+            await session.execute(
+                delete(MeetingSpeakerAlias).where(MeetingSpeakerAlias.meeting_id == meeting_id)
+            )
+            for canonical, display in output["final_aliases"].items():
+                session.add(
+                    MeetingSpeakerAlias(
+                        meeting_id=meeting_id,
+                        canonical_speaker=canonical,
+                        display_name=display,
+                    )
+                )
         meeting.status = MEETING_STATUS_COMPLETED
         meeting.processing_error = None
         meeting.duration_seconds = output["duration_seconds"]
@@ -165,6 +183,7 @@ def _run_inference(
     settings: Settings,
     requested_provider: str | None = None,
     live_timelines: dict[str, list[tuple[float, float]]] | None = None,
+    live_aliases: dict[str, str] | None = None,
 ) -> dict:
     """Blocking inference step (runs in a worker thread).
 
@@ -192,6 +211,7 @@ def _run_inference(
     )
 
     speaker_labels: dict[str, str] | None = None
+    final_aliases: dict[str, str] | None = None
     if live_timelines and result.provider == "elevenlabs":
         provider_intervals: dict[str, list[tuple[float, float]]] = {}
         for word in result.words:
@@ -200,6 +220,10 @@ def _run_inference(
             provider_intervals.setdefault(word.speaker_id, []).append((word.start, word.end))
         if provider_intervals:
             speaker_labels = remap_final_speakers(live_timelines, provider_intervals)
+            if live_aliases is not None:
+                final_aliases = reconcile_final_aliases(
+                    live_timelines, provider_intervals, live_aliases
+                )
 
     turns = form_turns(result.words, speaker_labels=speaker_labels)
 
@@ -222,6 +246,7 @@ def _run_inference(
         "language": result.language,
         "provider": result.provider,
         "model": result.model,
+        "final_aliases": final_aliases,
     }
 
 

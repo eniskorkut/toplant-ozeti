@@ -365,11 +365,13 @@ export function RecordingPanel() {
         // tail stays provisional until a later snapshot confirms it.
         const match = result.assignments.find(
           (assignment) =>
+            (!assignment.speaker_state || assignment.speaker_state === "temporally_confirmed") &&
             !assignment.provisional &&
+            assignment.canonical_speaker &&
             midpoint >= assignment.start - 0.5 &&
             midpoint <= assignment.end + 0.5,
         );
-        if (!match) return line;
+        if (!match || !match.canonical_speaker) return line;
         if (!line.provisional) {
           metricsRef.current.label.push(Math.max(0, elapsedSeconds() - line.endSeconds));
         }
@@ -988,7 +990,7 @@ export function RecordingPanel() {
 
         {status === "processing" ? (
           <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-            Ses yazıya dönüştürülüyor ve konuşmacılar ayrılıyor. Bu işlem kayıt süresine göre
+            Transkript ve konuşmacılar doğrulanıyor... Ses yazıya dönüştürülüyor ve konuşmacılar ayrılıyor. Bu işlem kayıt süresine göre
             birkaç dakika sürebilir.
           </p>
         ) : null}

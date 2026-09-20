@@ -296,7 +296,7 @@ def test_request_local_ids_are_mapped_and_unmatched_clusters_wait(context, monke
         # snapshot 2: same cluster again -> Kişi 1 confirmed
         {"speaker_0": [(0.0, 2.5)]},
         # snapshot 3: numbering swapped, overlap keeps Kişi 1
-        {"speaker_1": [(0.2, 0.8)]},
+        {"speaker_1": [(0.0, 1.5)]},
         # snapshot 4: a different, comparable cluster becomes a candidate
         {"speaker_0": [(0.0, 1.2)]},
         # snapshot 5: the candidate persists -> promoted densely as Kişi 2
@@ -636,7 +636,7 @@ def test_final_text_authority_and_unmatched_final_speaker(tmp_path: Path, monkey
 
     output = _run_inference(audio, None, Settings(), "elevenlabs", {"Kişi 1": [(0.0, 5.0)]})
 
-    assert output["turns"][0]["speaker"] == "Kişi 2"  # unseen final speaker: new label
+    assert output["turns"][0]["speaker"] == "Kişi 1"  # dense numbering: 1 speaker -> Kişi 1
     assert output["turns"][0]["text"] == "final"
 
 
@@ -840,7 +840,8 @@ def test_ambiguous_evidence_remains_provisional_and_strong_evidence_confirms(
     )
     res_ambiguous = submit_window(client, session1_id, start=2.0, end=10.0, sequence=1).json()
     assert len(res_ambiguous["assignments"]) == 1
-    assert res_ambiguous["assignments"][0]["canonical_speaker"] == "Kişi 1"
+    assert res_ambiguous["assignments"][0]["canonical_speaker"] is None
+    assert res_ambiguous["assignments"][0]["speaker_state"] == "pending"
     assert res_ambiguous["assignments"][0]["provisional"] is True
 
     # Session 2: Strong decisive overlap (margin >= 1.0s) confirms
@@ -864,6 +865,7 @@ def test_ambiguous_evidence_remains_provisional_and_strong_evidence_confirms(
     confirmed_assignments = [a for a in res_strong["assignments"] if not a["provisional"]]
     assert len(confirmed_assignments) == 1
     assert confirmed_assignments[0]["canonical_speaker"] == "Kişi 1"
+    assert confirmed_assignments[0]["speaker_state"] == "temporally_confirmed"
 
 
 def test_confirmation_patches_in_place_no_duplicates_chronological_order(
@@ -982,4 +984,114 @@ def test_confirmed_labels_do_not_oscillate_after_freeze() -> None:
 
     result_line = attach_label(line, conflicting_assignment)
     assert result_line["canonical"] == "Kişi 1"  # Frozen, did not flip to Kişi 2
+
+
+def test_long_gap_return_does_not_mint_new_kisi_and_reconciles_at_final(
+    context, monkeypatch
+) -> None:
+    """Phase 18 synthetic test: Long-gap return stays pending and does NOT create Kişi 3.
+
+    Speaker A: 0-4s
+    Speaker B: 4-8s
+    Speaker A silent for > 12s lookback horizon (40 seconds silence).
+    Same physical Speaker A returns at 50s with request-local id speaker_9.
+
+    Live:
+    - Never mints Kişi 3.
+    - 50s utterance stays pending ("Konuşmacı belirleniyor").
+    - Confirmed speakers remains strictly ["Kişi 1", "Kişi 2"].
+
+    Final:
+    - Reconciles densely onto Kişi 1 and Kişi 2.
+    """
+    client, _, _, store = context
+    live_session_id = make_session(client)
+
+    # Windows:
+    # 1. 0-8s: speaker_0 (0-4s), speaker_1 (4-8s) -> candidates
+    # 2. 0-12s: speaker_0 (0-4s), speaker_1 (4-8s) -> promoted to Kişi 1, Kişi 2
+    # 3. 44-56s: speaker_9 (50-54s) -> after 40s silence of Speaker A
+    # 4. 48-60s: candidate persists, but Speaker A silent >12s -> promotion blocked
+    windows = [
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_9": [(6.0, 10.0)]},  # local to window [44, 56] -> global [50, 54]
+        {"speaker_9": [(2.0, 6.0)]},   # local to window [48, 60] -> global [50, 54]
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    # Window 1: candidates registered
+    w1 = submit_window(client, live_session_id, start=0, end=8, sequence=1).json()
+    assert w1["confirmed_speakers"] == []
+    assert w1["candidate_speakers"] == 2
+
+    # Window 2: promoted to Kişi 1, Kişi 2
+    w2 = submit_window(client, live_session_id, start=0, end=12, sequence=2).json()
+    assert w2["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    assert "Kişi 1" in w2["promoted_speakers"]
+    assert "Kişi 2" in w2["promoted_speakers"]
+
+    # Window 3: 44-56s (Speaker A silent from 4.0 to 50.0s = 46s silence > 12s lookback horizon)
+    w3 = submit_window(client, live_session_id, start=44, end=56, sequence=3).json()
+    assert w3["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    assert "Kişi 3" not in w3.get("promoted_speakers", [])
+    assert w3["candidate_speakers"] >= 1
+
+    # Window 4: 48-60s (Candidate has 2 snapshots, but Speaker A is silent > 12s -> NO Kişi 3!)
+    w4 = submit_window(client, live_session_id, start=48, end=60, sequence=4).json()
+    assert "Kişi 3" not in w4["confirmed_speakers"]
+    assert "Kişi 3" not in w4["promoted_speakers"]
+    assert w4["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    # Long-gap return stays pending: no Kişi 3 assigned
+    assert all(a.get("canonical_speaker") != "Kişi 3" for a in w4["assignments"])
+
+    # FINAL RECONCILIATION:
+    # Full-file Scribe v2 detects speaker_alpha (0-4s and 50-54s) and speaker_beta (4-8s)
+    from app.services.speaker_matching import remap_final_speakers
+    session = store.get(live_session_id)
+    live_timelines = {
+        label: list(spk.committed) for label, spk in session.speakers.items()
+    }
+    final_intervals = {
+        "speaker_alpha": [(0.0, 4.0), (50.0, 54.0)],
+        "speaker_beta": [(4.0, 8.0)],
+    }
+    final_mapping = remap_final_speakers(live_timelines, final_intervals)
+    assert final_mapping["speaker_alpha"] == "Kişi 1"
+    assert final_mapping["speaker_beta"] == "Kişi 2"
+    assert set(final_mapping.values()) == {"Kişi 1", "Kişi 2"}
+
+
+def test_alias_reconciliation_only_preserves_confident_mapping() -> None:
+    """Phase 12: Aliases are preserved only on confident final mapping, never misapplied."""
+    from app.services.speaker_matching import reconcile_final_aliases, remap_final_speakers
+
+    live_timelines = {
+        "Kişi 1": [(0.0, 10.0)],
+        "Kişi 2": [(20.0, 30.0)],
+    }
+    live_aliases = {
+        "Kişi 1": "Ahmet",
+        "Kişi 2": "Mehmet",
+    }
+
+    # Case 1: speaker_A confidently matches Kişi 1 (10s overlap)
+    # speaker_B is ambiguous with zero overlap (e.g. 100-110s)
+    final_intervals = {
+        "speaker_A": [(0.0, 10.0)],
+        "speaker_B": [(100.0, 110.0)],
+    }
+    final_mapping = remap_final_speakers(live_timelines, final_intervals)
+    final_aliases = reconcile_final_aliases(live_timelines, final_intervals, live_aliases)
+
+    # Dense numbering: 2 final speakers -> Kişi 1, Kişi 2
+    assert final_mapping == {"speaker_A": "Kişi 1", "speaker_B": "Kişi 2"}
+    # Only Ahmet is preserved because Kişi 1 was confidently mapped
+    # Mehmet was NOT matched to any final speaker, so Mehmet is discarded (never given to speaker_B)
+    assert final_aliases == {"Kişi 1": "Ahmet"}
+    assert "Mehmet" not in final_aliases.values()
 

@@ -108,12 +108,18 @@ def test_remap_final_speakers_keeps_confident_labels_and_allocates_new_ones() ->
 
 
 def test_remap_never_applies_an_alias_to_an_unrelated_final_speaker() -> None:
+    from app.services.speaker_matching import reconcile_final_aliases
+
     live: dict[str, list[Interval]] = {"Kişi 1": [(0.0, 5.0)]}
     final = {"speaker_x": [(100.0, 120.0)]}
 
     mapping = remap_final_speakers(live, final)
+    final_aliases = reconcile_final_aliases(live, final, {"Kişi 1": "Ahmet"})
 
-    assert mapping == {"speaker_x": "Kişi 2"}
+    # Dense numbering: exactly 1 final speaker -> Kişi 1.
+    # But alias is never transferred to an unrelated final speaker.
+    assert mapping == {"speaker_x": "Kişi 1"}
+    assert final_aliases == {}
 
 
 def test_ambiguous_overlap_stays_provisional() -> None:
@@ -139,14 +145,19 @@ def test_clear_winner_is_accepted_with_margin() -> None:
     assert matches["speaker_0"].evidence == "overlap"
 
 
-def test_remap_treats_ambiguous_finals_as_new_labels() -> None:
+def test_remap_treats_ambiguous_finals_without_alias() -> None:
+    from app.services.speaker_matching import reconcile_final_aliases
+
     live = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(0.0, 4.0)]}
     final = {"speaker_x": [(0.0, 4.0)]}
 
     mapping = remap_final_speakers(live, final)
+    final_aliases = reconcile_final_aliases(live, final, {"Kişi 1": "Ahmet", "Kişi 2": "Mehmet"})
 
-    # Never attach a possibly wrong alias: allocate a fresh canonical instead.
-    assert mapping == {"speaker_x": "Kişi 3"}
+    # Dense numbering: exactly 1 final speaker -> Kişi 1.
+    # Ambiguous match: never attach a possibly wrong alias.
+    assert mapping == {"speaker_x": "Kişi 1"}
+    assert final_aliases == {}
 
 
 def test_gap_continuity_requires_a_clear_nearest_canonical() -> None:
