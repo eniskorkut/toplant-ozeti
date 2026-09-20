@@ -61,7 +61,32 @@ class RecordingMetrics:
     switches: int
     median_delay: float
     p95_delay: float
+    assignment_pending_rate: float = 0.0
     delays: list[float] = field(default_factory=list)
+
+    @property
+    def reference_live_coverage(self) -> float:
+        return self.confirmed_coverage
+
+    @property
+    def reference_pending_or_uncovered_rate(self) -> float:
+        return self.provisional_rate
+
+
+def compute_assignment_pending_rate(output_windows: list[dict]) -> float:
+    """Calculate ratio of pending speech seconds to all rolling assignment seconds.
+
+    Formula: assignment_pending_rate = pending_speech_seconds / all_rolling_assignment_seconds
+    """
+    all_seconds = 0.0
+    pending_seconds = 0.0
+    for w in output_windows:
+        for a in w.get("assignments", []):
+            dur = max(0.0, a.get("speech_seconds", a["end"] - a["start"]))
+            all_seconds += dur
+            if a.get("provisional", False):
+                pending_seconds += dur
+    return round(pending_seconds / all_seconds, 3) if all_seconds > 0 else 0.0
 
 
 @dataclass
@@ -358,6 +383,7 @@ def evaluate_timeline(
         switches=switches,
         median_delay=med_del,
         p95_delay=p95_del,
+        assignment_pending_rate=compute_assignment_pending_rate(output_windows),
         delays=delays,
     )
 

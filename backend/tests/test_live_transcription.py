@@ -1095,3 +1095,272 @@ def test_alias_reconciliation_only_preserves_confident_mapping() -> None:
     assert final_aliases == {"Kişi 1": "Ahmet"}
     assert "Mehmet" not in final_aliases.values()
 
+
+def test_stale_known_speaker_does_not_globally_freeze_promotion(
+    context, monkeypatch
+) -> None:
+    """A stale known speaker (silent > 12s) does NOT globally freeze candidate promotion."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    windows = [
+        # Window 1 (0-8s): spk_0 (0-4s), spk_1 (4-8s) -> candidates
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        # Window 2 (0-12s): spk_0 (0-4s), spk_1 (4-8s) -> both promoted to Kişi 1, Kişi 2
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        # Window 3 (4-16s): spk_1 (Kişi 2) active 4-12s (local 0-8s)
+        {"speaker_1": [(0.0, 8.0)]},
+        # Window 4 (8-20s): spk_1 (Kişi 2) active 8-16s (local 0-8s)
+        {"speaker_1": [(0.0, 8.0)]},
+        # Window 5 (12-24s): Kişi 1 silent since 4.0s (12-4 = 8s).
+        # spk_1 (Kişi 2) active 12-15s, spk_2 (new Speaker C) active 17-20s
+        {"speaker_1": [(0.0, 3.0)], "speaker_2": [(5.0, 8.0)]},
+        # Window 6 (16-28s): Window start 16.0. Kişi 1 silent since 4.0s -> 16 - 4 = 12s (STALE!).
+        # spk_1 (Kişi 2) active 16-18s, spk_2 (Speaker C) active 19-24s.
+        {"speaker_1": [(0.0, 2.0)], "speaker_2": [(3.0, 8.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    w2 = submit_window(client, live_session_id, start=0, end=12, sequence=2).json()
+    assert w2["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+
+    submit_window(client, live_session_id, start=4, end=16, sequence=3)
+    submit_window(client, live_session_id, start=8, end=20, sequence=4)
+    w5 = submit_window(client, live_session_id, start=12, end=24, sequence=5).json()
+    assert w5["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    assert w5["candidate_speakers"] >= 1
+
+    # In window 6, Kişi 1 is stale, but Candidate C coexisted with active Kişi 2:
+    w6 = submit_window(client, live_session_id, start=16, end=28, sequence=6).json()
+    assert "Kişi 3" in w6.get("promoted_speakers", [])
+    assert w6["confirmed_speakers"] == ["Kişi 1", "Kişi 2", "Kişi 3"]
+
+
+def test_returning_ambiguous_speaker_does_not_become_new_kisi(
+    context, monkeypatch
+) -> None:
+    """Returning speaker after a long gap without simultaneous coexisting evidence stays pending."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    windows = [
+        # Window 1 & 2: Kişi 1 and Kişi 2 confirmed
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        # Window 3 (44-56s): returning speaker alone under speaker_9 (50-54s -> local 6-10s)
+        {"speaker_9": [(6.0, 10.0)]},
+        # Window 4 (48-60s): speaker_9 appears again alone (50-54s -> local 2-6s)
+        {"speaker_9": [(2.0, 6.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    w2 = submit_window(client, live_session_id, start=0, end=12, sequence=2).json()
+    assert w2["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+
+    # Window 3 & 4: lone candidate appears after silence > 12s
+    submit_window(client, live_session_id, start=44, end=56, sequence=3)
+    w4 = submit_window(client, live_session_id, start=48, end=60, sequence=4).json()
+
+    # Ambiguous candidate must NOT be promoted to Kişi 3
+    assert "Kişi 3" not in w4["confirmed_speakers"]
+    assert "Kişi 3" not in w4.get("promoted_speakers", [])
+    assert w4["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    # All assignments for the returning speaker remain provisional / pending
+    assert all(a.get("canonical_speaker") != "Kişi 3" for a in w4["assignments"])
+
+
+def test_genuinely_distinct_later_speaker_can_become_kisi_n_plus_1(
+    context, monkeypatch
+) -> None:
+    """Phase 5 verification: active known speaker and C promote Kişi N+1 with stale Kişi 2."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    windows = [
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_1": [(0.0, 8.0)]},
+        {"speaker_1": [(0.0, 8.0)]},
+        {"speaker_1": [(0.0, 3.0)], "speaker_2": [(5.0, 8.0)]},
+        {"speaker_1": [(0.0, 2.0)], "speaker_2": [(3.0, 8.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    submit_window(client, live_session_id, start=0, end=12, sequence=2)
+    submit_window(client, live_session_id, start=4, end=16, sequence=3)
+    submit_window(client, live_session_id, start=8, end=20, sequence=4)
+    submit_window(client, live_session_id, start=12, end=24, sequence=5)
+    w6 = submit_window(client, live_session_id, start=16, end=28, sequence=6).json()
+
+    assert "Kişi 3" in w6.get("promoted_speakers", [])
+    assert w6["confirmed_speakers"] == ["Kişi 1", "Kişi 2", "Kişi 3"]
+
+
+def test_repeated_candidate_alone_is_insufficient_after_identity_loss(
+    context, monkeypatch
+) -> None:
+    """Candidate repeating across 2+ snapshots while alone after long silence cannot promote."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    windows = [
+        {"speaker_0": [(0.0, 4.0)]},
+        {"speaker_0": [(0.0, 4.0)]},
+        # Candidate appears alone in 3 consecutive snapshots:
+        {"speaker_x": [(2.0, 6.0)]},
+        {"speaker_x": [(2.0, 6.0)]},
+        {"speaker_x": [(2.0, 6.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    submit_window(client, live_session_id, start=0, end=12, sequence=2)
+
+    submit_window(client, live_session_id, start=30, end=42, sequence=3)
+    submit_window(client, live_session_id, start=34, end=46, sequence=4)
+    w5 = submit_window(client, live_session_id, start=38, end=50, sequence=5).json()
+
+    assert w5["confirmed_speakers"] == ["Kişi 1"]
+    assert "Kişi 2" not in w5.get("promoted_speakers", [])
+    assert w5["candidate_speakers"] >= 1
+
+
+def test_known_speaker_count_cap_still_enforced(context, monkeypatch) -> None:
+    """User sets speaker_count=2. Distinct candidate cannot promote beyond N."""
+    client, _, _, _ = context
+    response = client.post("/api/v1/live-transcription/sessions?speaker_count=2")
+    assert response.status_code == 201
+    live_session_id = response.json()["live_session_id"]
+
+    windows = [
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_0": [(0.0, 4.0)], "speaker_1": [(4.0, 8.0)]},
+        {"speaker_1": [(0.0, 8.0)]},
+        {"speaker_1": [(0.0, 8.0)]},
+        {"speaker_1": [(0.0, 3.0)], "speaker_2": [(5.0, 8.0)]},
+        {"speaker_1": [(0.0, 2.0)], "speaker_2": [(3.0, 8.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    submit_window(client, live_session_id, start=0, end=12, sequence=2)
+    submit_window(client, live_session_id, start=4, end=16, sequence=3)
+    submit_window(client, live_session_id, start=8, end=20, sequence=4)
+    submit_window(client, live_session_id, start=12, end=24, sequence=5)
+    w6 = submit_window(client, live_session_id, start=16, end=28, sequence=6).json()
+
+    # Confirmed speakers remains strictly Kişi 1 and Kişi 2:
+    assert w6["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    assert "Kişi 3" not in w6.get("promoted_speakers", [])
+    assert w6["candidate_speakers"] >= 1
+
+
+def test_canonical_labels_remain_dense() -> None:
+    """Canonical speaker labels are strictly dense without index skips."""
+    from app.services.live_sessions import next_canonical_label
+
+    assert next_canonical_label(set()) == "Kişi 1"
+    assert next_canonical_label({"Kişi 1"}) == "Kişi 2"
+    assert next_canonical_label({"Kişi 1", "Kişi 2"}) == "Kişi 3"
+    assert next_canonical_label({"Kişi 1", "Kişi 2", "Kişi 3"}) == "Kişi 4"
+    assert next_canonical_label({"Kişi 1", "Kişi 3"}) == "Kişi 2"
+
+
+def test_metric_denominators_explicit_and_mathematically_tested() -> None:
+    """Mathematical verification of distinct denominators:
+
+    - assignment_pending_rate = pending_speech_seconds / all_rolling_assignment_seconds
+    - reference_live_coverage = confirmed_speech_seconds / total_reference_speech_seconds
+    - reference_pending_or_uncovered_rate = (uncovered_speech_seconds) / total_reference
+    """
+    from app.services.canonical_evaluator import compute_assignment_pending_rate, evaluate_timeline
+
+    output_windows = [
+        {
+            "sequence": 1,
+            "window": [0.0, 10.0],
+            "assignments": [
+                {
+                    "canonical_speaker": "Kişi 1",
+                    "provisional": False,
+                    "start": 0.0,
+                    "end": 4.0,
+                    "speech_seconds": 4.0,
+                },
+                {
+                    "canonical_speaker": None,
+                    "provisional": True,
+                    "start": 4.0,
+                    "end": 6.0,
+                    "speech_seconds": 2.0,
+                },
+            ],
+        },
+        {
+            "sequence": 2,
+            "window": [10.0, 20.0],
+            "assignments": [
+                {
+                    "canonical_speaker": "Kişi 1",
+                    "provisional": False,
+                    "start": 10.0,
+                    "end": 14.0,
+                    "speech_seconds": 4.0,
+                },
+                {
+                    "canonical_speaker": None,
+                    "provisional": True,
+                    "start": 14.0,
+                    "end": 20.0,
+                    "speech_seconds": 6.0,
+                },
+            ],
+        },
+    ]
+
+    assign_pending = compute_assignment_pending_rate(output_windows)
+    assert assign_pending == 0.500
+
+    turns = [
+        {"speaker": "Kişi 1", "start_seconds": 0.0, "end_seconds": 10.0},
+        {"speaker": "Kişi 2", "start_seconds": 10.0, "end_seconds": 20.0},
+    ]
+    metrics = evaluate_timeline(
+        recording_name="test-denominators",
+        output_windows=output_windows,
+        turns=turns,
+        duration=20.0,
+        confirmed_speakers=["Kişi 1"],
+        provisional_candidates=[],
+        delays=[],
+        resolution=0.25,
+    )
+
+    cov_sum = metrics.reference_live_coverage + metrics.reference_pending_or_uncovered_rate
+    assert round(cov_sum, 2) == 1.00
+    assert metrics.assignment_pending_rate == 0.500
+    assert metrics.reference_pending_or_uncovered_rate != metrics.assignment_pending_rate
+

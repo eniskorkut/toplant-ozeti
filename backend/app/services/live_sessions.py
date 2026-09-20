@@ -73,6 +73,9 @@ class CandidateSpeaker:
     seen_snapshots: int = 0
     first_sequence: int = 0
     last_sequence: int = 0
+    # Positive distinct evidence: active confirmed canonical speakers coexisting
+    # in the same snapshot with this candidate.
+    coexisting_confirmed_speakers: set[str] = field(default_factory=set)
 
     @property
     def speech_seconds(self) -> float:
@@ -245,6 +248,7 @@ class LiveSessionStore:
             last_snapshot.setdefault(label, []).extend(spans)
 
         consumed_candidates: list[int] = []
+        unmatched_clusters: list[tuple[str, list[Interval]]] = []
         for provider_name in sorted(provider_intervals):
             spans = provider_intervals[provider_name]
             if provider_name in ambiguous:
@@ -252,7 +256,7 @@ class LiveSessionStore:
                 continue
             match: SpeakerMatch | None = matches.get(provider_name)
             if match is None:
-                self._register_candidate(session, spans, sequence)
+                unmatched_clusters.append((provider_name, spans))
                 continue
             label = match.canonical_speaker
             stable, tail = split(spans)
@@ -322,15 +326,31 @@ class LiveSessionStore:
                     }
                 )
 
+        active_confirmed = {
+            m.canonical_speaker
+            for m in matches.values()
+            if m.canonical_speaker in session.confirmed_labels_set
+        }
+        for _provider_name, spans in unmatched_clusters:
+            self._register_candidate(
+                session, spans, sequence, coexisting_confirmed=active_confirmed
+            )
+
         # Promotion: only clusters confirmed by multiple overlapping snapshots
         # become canonical speakers (first appearance wins, numbering stays dense).
         promoted: list[str] = []
         for index, candidate in enumerate(session.candidates):
-            if not self._may_promote(
-                session, window=window, matches=matches, provider_intervals=provider_intervals
-            ):
+            if session.max_speakers is not None and len(session.speakers) >= session.max_speakers:
                 break
             if candidate.seen_snapshots < MIN_CANDIDATE_SNAPSHOTS:
+                continue
+            if not self._may_promote(
+                session,
+                candidate=candidate,
+                window=window,
+                matches=matches,
+                provider_intervals=provider_intervals,
+            ):
                 continue
             label = next_canonical_label(set(session.speakers))
             speaker = session.speaker(label)
@@ -453,18 +473,19 @@ class LiveSessionStore:
                         last_ends.append(max(end for _, end in spans))
         return max(last_ends) if last_ends else None
 
-    def _has_silent_known_speaker(
+    def _stale_confirmed_speakers(
         self,
         session: LiveSession,
         window: Interval,
         *,
         matches: dict[str, SpeakerMatch] | None = None,
         provider_intervals: dict[str, list[Interval]] | None = None,
-    ) -> bool:
-        """True if any confirmed speaker has been silent for longer than the lookback horizon."""
+    ) -> set[str]:
+        """Return confirmed canonical speakers silent longer than the lookback horizon."""
         if not session.confirmed_labels_set:
-            return False
+            return set()
         window_start = window[0]
+        stale: set[str] = set()
         for label in session.confirmed_labels_set:
             last_active = self._speaker_last_active(
                 session, label, matches=matches, provider_intervals=provider_intervals
@@ -474,12 +495,55 @@ class LiveSessionStore:
             # If the known speaker's last speech ended more than TEMPORAL_HORIZON_SECONDS
             # before the current window start, continuity for that voice has expired.
             if (window_start - last_active) > TEMPORAL_HORIZON_SECONDS:
-                return True
-        return False
+                stale.add(label)
+        return stale
+
+    def _has_silent_known_speaker(
+        self,
+        session: LiveSession,
+        window: Interval,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> bool:
+        """True if any confirmed speaker has been silent for longer than the lookback horizon."""
+        return bool(
+            self._stale_confirmed_speakers(
+                session, window, matches=matches, provider_intervals=provider_intervals
+            )
+        )
+
+    def _is_candidate_ambiguous_with_stale_speaker(
+        self,
+        session: LiveSession,
+        candidate: CandidateSpeaker,
+        window: Interval,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> bool:
+        """Determine whether THIS candidate could plausibly be a returning stale speaker.
+
+        A candidate should remain pending when its identity cannot be distinguished from
+        one or more stale known speakers using available temporal evidence.
+        When stale confirmed speakers exist, an isolated candidate appearing alone cannot
+        be distinguished from a returning stale speaker. Positive distinct-speaker evidence
+        (coexisting simultaneously with an active confirmed canonical speaker in snapshot)
+        establishes that the candidate represents a distinct voice.
+        """
+        stale = self._stale_confirmed_speakers(
+            session, window, matches=matches, provider_intervals=provider_intervals
+        )
+        if not stale:
+            return False
+
+        # Positive distinct-speaker evidence: candidate coexisted with an active confirmed speaker.
+        return not candidate.coexisting_confirmed_speakers
 
     def _may_promote(
         self,
         session: LiveSession,
+        candidate: CandidateSpeaker | None = None,
         window: Interval | None = None,
         *,
         matches: dict[str, SpeakerMatch] | None = None,
@@ -487,19 +551,28 @@ class LiveSessionStore:
     ) -> bool:
         if session.max_speakers is not None and len(session.speakers) >= session.max_speakers:
             return False
-        return not (
-            window is not None
-            and self._has_silent_known_speaker(
-                session, window, matches=matches, provider_intervals=provider_intervals
-            )
+        if window is None or candidate is None:
+            return True
+        return not self._is_candidate_ambiguous_with_stale_speaker(
+            session,
+            candidate,
+            window,
+            matches=matches,
+            provider_intervals=provider_intervals,
         )
 
     def _register_candidate(
-        self, session: LiveSession, spans: list[Interval], sequence: int
+        self,
+        session: LiveSession,
+        spans: list[Interval],
+        sequence: int,
+        *,
+        coexisting_confirmed: set[str] | None = None,
     ) -> None:
         """Accumulate promotion evidence for an unmatched cluster."""
         if not spans:
             return
+        coex = set(coexisting_confirmed or ())
         for candidate in session.candidates:
             # Evidence must come from an EARLIER snapshot: two clusters inside the
             # same snapshot are different voices, not one candidate.
@@ -510,6 +583,8 @@ class LiveSessionStore:
                 candidate.intervals = candidate.intervals[-MAX_INTERVALS_PER_SPEAKER:]
                 candidate.seen_snapshots += 1
                 candidate.last_sequence = sequence
+                if coex:
+                    candidate.coexisting_confirmed_speakers.update(coex)
                 if candidate.first_sequence == 0:
                     candidate.first_sequence = sequence
                 return
@@ -519,6 +594,7 @@ class LiveSessionStore:
                 seen_snapshots=1,
                 first_sequence=sequence,
                 last_sequence=sequence,
+                coexisting_confirmed_speakers=coex,
             )
         )
 
