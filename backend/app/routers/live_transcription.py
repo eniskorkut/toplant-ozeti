@@ -12,7 +12,16 @@ import logging
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
@@ -52,6 +61,8 @@ class SpeakerAssignment(BaseModel):
     is_new: bool
     confidence: float | None = None
     evidence: str = "overlap"
+    # Provisional = newest mutable tail; only confirmed assignments may label UI.
+    provisional: bool = False
     start: float
     end: float
     speech_seconds: float
@@ -62,7 +73,10 @@ class SpeakerWindowResult(BaseModel):
     window: list[float]
     assignments: list[SpeakerAssignment]
     new_speakers: list[str]
+    promoted_speakers: list[str] = []
     ambiguous_speakers: int = 0
+    candidate_speakers: int = 0
+    confirmed_speakers: list[str] = []
     provider_speakers: int
     latency_seconds: float
     rolling_seconds: float
@@ -80,6 +94,8 @@ class LiveSessionState(BaseModel):
     windows_received: int
     rolling_seconds: float
     label_switches: int
+    candidate_speakers: int = 0
+    confirmed_speakers: list[str] = []
     speakers: list[LiveSpeakerOut]
     aliases: dict[str, str]
 
@@ -107,9 +123,11 @@ def _get_session(store: LiveSessionStore, live_session_id: str):
 )
 async def create_live_session(
     store: Annotated[LiveSessionStore, Depends(get_live_session_store)],
+    speaker_count: Annotated[int | None, Query(ge=1, le=12)] = None,
 ) -> LiveSessionCreated:
-    session = store.create()
-    logger.info("live session %s created", session.id)
+    """Start a fresh registry: numbering always begins at Kişi 1 for this recording."""
+    session = store.create(max_speakers=speaker_count)
+    logger.info("live session %s created (max_speakers=%s)", session.id, speaker_count)
     return LiveSessionCreated(live_session_id=session.id)
 
 
@@ -125,6 +143,8 @@ async def get_live_session(
         windows_received=state["windows_received"],
         rolling_seconds=state["rolling_seconds"],
         label_switches=state["label_switches"],
+        candidate_speakers=state["candidate_speakers"],
+        confirmed_speakers=state["confirmed_speakers"],
         speakers=[LiveSpeakerOut(**speaker) for speaker in state["speakers"]],
         aliases=state["aliases"],
     )
@@ -148,8 +168,13 @@ async def submit_speaker_window(
     settings: Annotated[Settings, Depends(get_settings)],
     store: Annotated[LiveSessionStore, Depends(get_live_session_store)],
     speaker_count: Annotated[int | None, Form(ge=1, le=12)] = None,
+    stable_until: Annotated[float | None, Form(ge=0)] = None,
 ) -> SpeakerWindowResult:
-    """Run one rolling diarization window and fold it into the session's timelines."""
+    """Run one long-context diarization snapshot and fold it into the session.
+
+    `stable_until` is the boundary between the confirmable region and the mutable
+    newest tail (client sends end minus one step).
+    """
     session = _get_session(store, live_session_id)
     if not settings.elevenlabs_configured:
         raise HTTPException(
@@ -163,6 +188,11 @@ async def submit_speaker_window(
         )
 
     duration = end_seconds - start_seconds
+    if stable_until is not None and not (start_seconds <= stable_until <= end_seconds):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="stable_until must lie inside the snapshot window",
+        )
     if duration < MIN_WINDOW_SECONDS or duration > MAX_WINDOW_SECONDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -219,6 +249,7 @@ async def submit_speaker_window(
         provider_intervals=provider_intervals,
         window=(start_seconds, end_seconds),
         sequence=sequence,
+        stable_until=stable_until,
     )
     session.next_sequence = sequence + 1
     return SpeakerWindowResult(
@@ -226,7 +257,10 @@ async def submit_speaker_window(
         window=result["window"],
         assignments=[SpeakerAssignment(**item) for item in result["assignments"]],
         new_speakers=result["new_speakers"],
+        promoted_speakers=result["promoted_speakers"],
         ambiguous_speakers=result["ambiguous_speakers"],
+        candidate_speakers=result["candidate_speakers"],
+        confirmed_speakers=result["confirmed_speakers"],
         provider_speakers=len(provider_intervals),
         latency_seconds=round(provider_latency, 3),
         rolling_seconds=round(session.rolling_seconds, 3),

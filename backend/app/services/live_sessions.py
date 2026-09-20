@@ -1,9 +1,19 @@
-"""Ephemeral live-session state for the ElevenLabs live meeting experience.
+"""Ephemeral live-session state for delayed long-context speaker attribution.
 
-In-memory only: a live session is disposable state for one ongoing recording. It
-holds no audio, no embeddings and no provider payloads — only canonical speaker
-timelines (timestamps), display aliases and safe counters. Sessions expire on a
-TTL so an abandoned recording cannot leak state forever.
+Design (measured): short independent windows under-attribute rapid conversational
+diarization, while the full-file Scribe pass separates speakers well. The live path
+therefore sends LONG overlapping snapshots (lookback + small step) and turns them
+into stable canonical labels through:
+
+- previous-snapshot matching (request-local ids are never compared by name);
+- promotion evidence: an unmatched cluster must persist across snapshots (or be
+  part of a sufficiently long first snapshot) before it becomes a new Kişi N;
+- stable region / mutable tail: only the part of a snapshot older than one step is
+  confirmed, the newest seconds stay provisional;
+- dense numbering and a per-session registry that never survives the recording.
+
+In-memory only: timestamps, labels and aliases. No audio, no embeddings, no
+provider payloads.
 """
 
 from __future__ import annotations
@@ -25,27 +35,36 @@ from app.services.speaker_matching import (
 
 DEFAULT_TTL_SECONDS = 30 * 60
 MAX_SESSIONS = 32
-MAX_INTERVALS_PER_SPEAKER = 2_000
+MAX_INTERVALS_PER_SPEAKER = 4_000
+# Every canonical speaker needs evidence from at least this many overlapping
+# snapshots. One snapshot alone is never enough: that is what used to create
+# runaway Kişi 5/8/10 labels.
+MIN_CANDIDATE_SNAPSHOTS = 2
 
 
 @dataclass
 class LiveSpeaker:
     label: str
-    # Windows that are older than the newest one; never relabeled again.
+    # Confirmed (stable) intervals only; never relabeled again.
     committed: list[Interval] = field(default_factory=list)
-    # Intervals of the newest window only: the small mutable overlap tail.
-    latest: list[Interval] = field(default_factory=list)
-
-    def intervals(self) -> list[Interval]:
-        return self.committed + self.latest
-
-    @property
-    def latest_seconds(self) -> float:
-        return total_seconds(self.latest)
 
     @property
     def total_seconds(self) -> float:
-        return total_seconds(self.committed) + self.latest_seconds
+        return total_seconds(self.committed)
+
+
+@dataclass
+class CandidateSpeaker:
+    """Unmatched provider cluster waiting for promotion evidence."""
+
+    intervals: list[Interval] = field(default_factory=list)
+    seen_snapshots: int = 0
+    first_sequence: int = 0
+    last_sequence: int = 0
+
+    @property
+    def speech_seconds(self) -> float:
+        return total_seconds(self.intervals)
 
 
 @dataclass
@@ -57,10 +76,13 @@ class LiveSession:
     windows_received: int = 0
     rolling_seconds: float = 0.0
     label_switches: int = 0
-    revision_events: int = 0
     ambiguous_segments: int = 0
-    pending_intervals: list[Interval] = field(default_factory=list)
+    # Known speaker count from the user selection (num_speakers = maximum expected).
+    max_speakers: int | None = None
     speakers: dict[str, LiveSpeaker] = field(default_factory=dict)
+    candidates: list[CandidateSpeaker] = field(default_factory=list)
+    # Full spans of the previous snapshot per canonical label (matching reference).
+    last_snapshot: dict[str, list[Interval]] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
 
     def speaker(self, label: str) -> LiveSpeaker:
@@ -70,8 +92,8 @@ class LiveSession:
             self.speakers[label] = speaker
         return speaker
 
-    def canonical_intervals(self) -> dict[str, list[Interval]]:
-        return {label: speaker.intervals() for label, speaker in self.speakers.items()}
+    def confirmed_labels(self) -> list[str]:
+        return sorted(self.speakers, key=_label_sort_key)
 
     def public_state(self) -> dict:
         return {
@@ -79,19 +101,30 @@ class LiveSession:
             "windows_received": self.windows_received,
             "rolling_seconds": round(self.rolling_seconds, 3),
             "label_switches": self.label_switches,
-            "revision_events": self.revision_events,
             "ambiguous_segments": self.ambiguous_segments,
-            "pending_seconds": round(total_seconds(self.pending_intervals), 3),
+            "candidate_speakers": len(self.candidates),
+            "confirmed_speakers": self.confirmed_labels(),
             "speakers": [
                 {
                     "canonical_speaker": label,
                     "display_name": self.aliases.get(label, label),
                     "speech_seconds": round(speaker.total_seconds, 3),
                 }
-                for label, speaker in sorted(self.speakers.items())
+                for label, speaker in sorted(
+                    self.speakers.items(), key=lambda item: _label_sort_key(item[0])
+                )
             ],
             "aliases": dict(self.aliases),
         }
+
+
+def _label_sort_key(label: str) -> tuple[int, str]:
+    if label.startswith("Kişi "):
+        try:
+            return (int(label.split(" ", 1)[1]), label)
+        except ValueError:
+            return (999, label)
+    return (1000, label)
 
 
 class LiveSessionStore:
@@ -100,11 +133,11 @@ class LiveSessionStore:
         self._lock = threading.Lock()
         self._ttl_seconds = ttl_seconds
 
-    # --- lifecycle ---------------------------------------------------------
-
-    def create(self) -> LiveSession:
+    def create(self, max_speakers: int | None = None) -> LiveSession:
         now = time.monotonic()
-        session = LiveSession(id=uuid.uuid4().hex, created_at=now, last_seen=now)
+        session = LiveSession(
+            id=uuid.uuid4().hex, created_at=now, last_seen=now, max_speakers=max_speakers
+        )
         with self._lock:
             self._prune_locked(now)
             if len(self._sessions) >= MAX_SESSIONS:
@@ -140,7 +173,7 @@ class LiveSessionStore:
         for session_id in expired:
             self._sessions.pop(session_id, None)
 
-    # --- rolling windows ---------------------------------------------------
+    # --- rolling snapshots -------------------------------------------------
 
     def apply_window(
         self,
@@ -149,29 +182,20 @@ class LiveSessionStore:
         provider_intervals: dict[str, list[Interval]],
         window: Interval,
         sequence: int,
-        min_overlap_seconds: float | None = None,
-        min_overlap_ratio: float | None = None,
+        stable_until: float | None = None,
     ) -> dict:
-        """Match one request-local result onto canonical speakers and store it.
+        """Fold one long-context snapshot into the session.
 
-        The newest window's intervals form a mutable tail: they may be revised by
-        the next window, while older windows stay committed. This is what keeps a
-        Kişi label from flipping for the whole history.
+        `stable_until` marks the boundary between the confirmable region and the
+        mutable tail (newest step). Matched spans are split accordingly; only the
+        stable part is committed, the tail is reported as provisional.
         """
-        kwargs: dict[str, float] = {}
-        if min_overlap_seconds is not None:
-            kwargs["min_overlap_seconds"] = min_overlap_seconds
-        if min_overlap_ratio is not None:
-            kwargs["min_overlap_ratio"] = min_overlap_ratio
+        boundary = window[1] if stable_until is None else min(
+            max(stable_until, window[0]), window[1]
+        )
 
-        # Match against the PREVIOUS window's own intervals, not the accumulated
-        # history: overlapping windows share audio, so word timings in the shared
-        # region are direct evidence and a single wrong assignment cannot poison
-        # every later window. When a speaker did not appear in the previous
-        # window, fall back to their committed history (resumption after a gap).
-        reference = {
-            label: (list(speaker.latest) if speaker.latest else list(speaker.committed))
-            for label, speaker in session.speakers.items()
+        reference = session.last_snapshot or {
+            label: list(speaker.committed) for label, speaker in session.speakers.items()
         }
         matches, unmatched, ambiguous = match_speakers(
             reference,
@@ -179,68 +203,183 @@ class LiveSessionStore:
             window=window,
             gap_tolerance_seconds=DEFAULT_GAP_TOLERANCE_SECONDS,
             allow_disjoint_merge=True,
-            **kwargs,
         )
 
-        # Previous tail becomes committed history before the new window is applied.
-        for speaker in session.speakers.values():
-            speaker.committed.extend(speaker.latest)
-            speaker.latest = []
-
-        existing_labels = set(session.speakers)
-        new_speakers: list[str] = []
-
         assignments: list[dict] = []
+        new_speakers: list[str] = []
+        last_snapshot: dict[str, list[Interval]] = {}
+
+        def split(spans: list[Interval]) -> tuple[list[Interval], list[Interval]]:
+            stable = [
+                (max(start, window[0]), min(end, boundary))
+                for start, end in spans
+                if start < boundary
+            ]
+            tail = [
+                (max(start, boundary), min(end, window[1]))
+                for start, end in spans
+                if end > boundary
+            ]
+            return [span for span in stable if span[1] > span[0]], [
+                span for span in tail if span[1] > span[0]
+            ]
+
+        def record(label: str, spans: list[Interval]) -> None:
+            last_snapshot.setdefault(label, []).extend(spans)
+
+        consumed_candidates: list[int] = []
         for provider_name in sorted(provider_intervals):
             spans = provider_intervals[provider_name]
             if provider_name in ambiguous:
-                # Evidence exists but is not decisive: keep it provisional and do
-                # not pollute any canonical timeline with a guess.
-                session.pending_intervals.extend(spans)
+                session.ambiguous_segments += 1
                 continue
             match: SpeakerMatch | None = matches.get(provider_name)
             if match is None:
-                label = next_canonical_label(existing_labels)
-                existing_labels.add(label)
-                new_speakers.append(label)
-                confidence = None
-                evidence = "new"
-            else:
-                label = match.canonical_speaker
-                confidence = match.ratio
-                evidence = match.evidence
+                self._register_candidate(session, spans, sequence)
+                continue
+            label = match.canonical_speaker
+            stable, tail = split(spans)
             speaker = session.speaker(label)
-            speaker.latest.extend(spans)
-            assignments.append(
-                {
-                    "canonical_speaker": label,
-                    "is_new": label in new_speakers,
-                    "confidence": confidence,
-                    "evidence": evidence,
-                    "start": round(min(start for start, _ in spans), 3),
-                    "end": round(max(end for _, end in spans), 3),
-                    "speech_seconds": round(total_seconds(spans), 3),
-                }
-            )
-        session.ambiguous_segments += len(ambiguous)
+            speaker.committed.extend(stable)
+            speaker.committed = speaker.committed[-MAX_INTERVALS_PER_SPEAKER:]
+            record(label, spans)
+            if stable:
+                assignments.append(
+                    {
+                        "canonical_speaker": label,
+                        "is_new": False,
+                        "confidence": match.ratio,
+                        "evidence": match.evidence,
+                        "provisional": False,
+                        "start": round(min(start for start, _ in stable), 3),
+                        "end": round(max(end for _, end in stable), 3),
+                        "speech_seconds": round(total_seconds(stable), 3),
+                    }
+                )
+            if tail:
+                assignments.append(
+                    {
+                        "canonical_speaker": label,
+                        "is_new": False,
+                        "confidence": match.ratio,
+                        "evidence": match.evidence,
+                        "provisional": True,
+                        "start": round(min(start for start, _ in tail), 3),
+                        "end": round(max(end for _, end in tail), 3),
+                        "speech_seconds": round(total_seconds(tail), 3),
+                    }
+                )
 
+        # Promotion: only clusters confirmed by multiple overlapping snapshots
+        # become canonical speakers (first appearance wins, numbering stays dense).
+        promoted: list[str] = []
+        for index, candidate in enumerate(session.candidates):
+            if not self._may_promote(session):
+                break
+            if candidate.seen_snapshots < MIN_CANDIDATE_SNAPSHOTS:
+                continue
+            label = next_canonical_label(set(session.speakers))
+            speaker = session.speaker(label)
+            stable, tail = split(candidate.intervals)
+            speaker.committed.extend(stable)
+            record(label, candidate.intervals)
+            promoted.append(label)
+            new_speakers.append(label)
+            consumed_candidates.append(index)
+            if stable:
+                assignments.append(
+                    {
+                        "canonical_speaker": label,
+                        "is_new": True,
+                        "confidence": None,
+                        "evidence": "promoted",
+                        "provisional": False,
+                        "start": round(min(start for start, _ in stable), 3),
+                        "end": round(max(end for _, end in stable), 3),
+                        "speech_seconds": round(total_seconds(stable), 3),
+                    }
+                )
+            if tail:
+                assignments.append(
+                    {
+                        "canonical_speaker": label,
+                        "is_new": True,
+                        "confidence": None,
+                        "evidence": "promoted",
+                        "provisional": True,
+                        "start": round(min(start for start, _ in tail), 3),
+                        "end": round(max(end for _, end in tail), 3),
+                        "speech_seconds": round(total_seconds(tail), 3),
+                    }
+                )
+        for index in reversed(consumed_candidates):
+            session.candidates.pop(index)
+
+        session.last_snapshot = last_snapshot
         session.windows_received += 1
         session.rolling_seconds += max(0.0, window[1] - window[0])
         if session.windows_received > 1 and new_speakers:
-            # New canonical speakers after the first window are fragmentation
-            # evidence (stable meetings should not allocate more labels).
             session.label_switches += len(new_speakers)
-        for speaker in session.speakers.values():
-            if len(speaker.committed) > MAX_INTERVALS_PER_SPEAKER:
-                speaker.committed = speaker.committed[-MAX_INTERVALS_PER_SPEAKER:]
 
         return {
             "sequence": sequence,
             "window": [round(window[0], 3), round(window[1], 3)],
             "assignments": assignments,
             "new_speakers": new_speakers,
+            "promoted_speakers": promoted,
             "ambiguous_speakers": len(ambiguous),
+            "candidate_speakers": len(session.candidates),
+            "confirmed_speakers": session.confirmed_labels(),
         }
+
+    def _may_promote(self, session: LiveSession) -> bool:
+        if session.max_speakers is None:
+            return True
+        return len(session.speakers) < session.max_speakers
+
+    def _register_candidate(
+        self, session: LiveSession, spans: list[Interval], sequence: int
+    ) -> None:
+        """Accumulate promotion evidence for an unmatched cluster."""
+        if not spans:
+            return
+        for candidate in session.candidates:
+            if _clusters_are_continuous(candidate.intervals, spans):
+                candidate.intervals.extend(spans)
+                candidate.intervals = candidate.intervals[-MAX_INTERVALS_PER_SPEAKER:]
+                candidate.seen_snapshots += 1
+                candidate.last_sequence = sequence
+                if candidate.first_sequence == 0:
+                    candidate.first_sequence = sequence
+                return
+        session.candidates.append(
+            CandidateSpeaker(
+                intervals=list(spans),
+                seen_snapshots=1,
+                first_sequence=sequence,
+                last_sequence=sequence,
+            )
+        )
+
+
+def _clusters_are_continuous(
+    candidate_intervals: list[Interval], spans: list[Interval], tolerance: float = 2.0
+) -> bool:
+    """Same cluster when the spans overlap or sit within a short conversational gap."""
+    for left in candidate_intervals:
+        for right in spans:
+            if left[1] < right[0]:
+                gap = right[0] - left[1]
+            elif right[1] < left[0]:
+                gap = left[0] - right[1]
+            else:
+                return True
+            if gap <= tolerance:
+                return True
+    return False
+
+
+MAX_INTERVALS_PER_SNAPSHOT = MAX_INTERVALS_PER_SPEAKER
 
 
 @lru_cache

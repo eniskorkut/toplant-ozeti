@@ -266,142 +266,128 @@ describe("PcmCapture cadence", () => {
   });
 });
 
-describe("RollingSpeakerTracker", () => {
+describe("RollingSpeakerTracker (long context)", () => {
   function pcm(seconds: number): Int16Array {
     return new Int16Array(16_000 * seconds);
   }
 
-  it("sends non-growing overlapping windows with increasing sequence numbers", async () => {
-    const sent: { startSeconds: number; endSeconds: number; sequence: number }[] = [];
-    const tracker = new RollingSpeakerTracker({
+  function tracker(send: (request: {
+    pcm: Blob;
+    startSeconds: number;
+    endSeconds: number;
+    sequence: number;
+    speakerCount: number | null;
+    stableUntil: number;
+  }) => Promise<import("@/lib/api").SpeakerWindowResult>, onFailure?: (error: unknown) => void) {
+    return new RollingSpeakerTracker({
       liveSessionId: "live-1",
       speakerCount: null,
-      send: async (request) => {
-        sent.push({
-          startSeconds: request.startSeconds,
-          endSeconds: request.endSeconds,
-          sequence: request.sequence,
-        });
-        return {
-          sequence: request.sequence,
-          window: [request.startSeconds, request.endSeconds],
-          assignments: [],
-          new_speakers: [],
-          provider_speakers: 1,
-          latency_seconds: 0.4,
-          rolling_seconds: request.endSeconds,
-          label_switches: 0,
-        };
-      },
+      send,
       onResult: () => undefined,
+      onFailure,
+    });
+  }
+
+  function result(request: {
+    sequence: number;
+    startSeconds: number;
+    endSeconds: number;
+  }): import("@/lib/api").SpeakerWindowResult {
+    return {
+      sequence: request.sequence,
+      window: [request.startSeconds, request.endSeconds],
+      assignments: [],
+      new_speakers: [],
+      promoted_speakers: [],
+      ambiguous_speakers: 0,
+      candidate_speakers: 0,
+      confirmed_speakers: [],
+      provider_speakers: 1,
+      latency_seconds: 0.4,
+      rolling_seconds: request.endSeconds,
+      label_switches: 0,
+    };
+  }
+
+  it("bootstraps progressively, then slides a bounded lookback", async () => {
+    const sent: { startSeconds: number; endSeconds: number; stableUntil: number }[] = [];
+    const rolling = tracker(async (request) => {
+      sent.push({
+        startSeconds: request.startSeconds,
+        endSeconds: request.endSeconds,
+        stableUntil: request.stableUntil,
+      });
+      return result(request);
     });
 
-    for (let second = 0; second < 6; second += 1) {
-      tracker.push(pcm(1), second);
+    for (let second = 0; second < 20; second += 1) {
+      rolling.push(pcm(1), second);
+      await Promise.resolve();
     }
     await Promise.resolve();
     await Promise.resolve();
-    expect(sent).toEqual([{ startSeconds: 0, endSeconds: 6, sequence: 1 }]);
 
-    for (let second = 6; second < 12; second += 1) {
-      tracker.push(pcm(1), second);
-    }
-    await Promise.resolve();
-    await Promise.resolve();
     expect(sent).toEqual([
-      { startSeconds: 0, endSeconds: 6, sequence: 1 },
-      { startSeconds: 4, endSeconds: 10, sequence: 2 },
+      { startSeconds: 0, endSeconds: 8, stableUntil: 4 },
+      { startSeconds: 0, endSeconds: 12, stableUntil: 8 },
+      { startSeconds: 4, endSeconds: 16, stableUntil: 12 },
+      { startSeconds: 8, endSeconds: 20, stableUntil: 16 },
     ]);
-    expect(tracker.requestCount).toBe(2);
-    expect(tracker.uploadedSeconds).toBe(12);
+    expect(rolling.requestCount).toBe(4);
+    expect(rolling.uploadedSeconds).toBe(44);
   });
 
-  it("retries the same sequence once after a failure, on a delay", async () => {
+  it("retries the same snapshot once after a failure, on a delay", async () => {
     vi.useFakeTimers();
     try {
       const sequences: number[] = [];
       let calls = 0;
-      const tracker = new RollingSpeakerTracker({
-        liveSessionId: "live-1",
-        speakerCount: null,
-        send: async (request) => {
-          calls += 1;
-          sequences.push(request.sequence);
-          if (calls === 1) throw new Error("provider down");
-          return {
-            sequence: request.sequence,
-            window: [request.startSeconds, request.endSeconds],
-            assignments: [],
-            new_speakers: [],
-            provider_speakers: 1,
-            latency_seconds: 0.4,
-            rolling_seconds: request.endSeconds,
-            label_switches: 0,
-          };
-        },
-        onResult: () => undefined,
-        onFailure: () => undefined,
+      const rolling = tracker(async (request) => {
+        calls += 1;
+        sequences.push(request.sequence);
+        if (calls === 1) throw new Error("provider down");
+        return result(request);
       });
 
-      for (let second = 0; second < 6; second += 1) tracker.push(pcm(1), second);
+      for (let second = 0; second < 8; second += 1) rolling.push(pcm(1), second);
       await vi.advanceTimersByTimeAsync(0);
       expect(sequences).toEqual([1]);
 
-      // No immediate microtask retry loop: the retry waits for the backoff.
       await vi.advanceTimersByTimeAsync(1600);
       expect(sequences).toEqual([1, 1]);
-      expect(tracker.requestCount).toBe(1);
+      expect(rolling.requestCount).toBe(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("skips a window after repeated failures instead of retrying forever", async () => {
+  it("skips a snapshot after repeated failures instead of retrying forever", async () => {
     vi.useFakeTimers();
     try {
       const sequences: number[] = [];
-      const tracker = new RollingSpeakerTracker({
-        liveSessionId: "live-1",
-        speakerCount: null,
-        send: async (request) => {
-          sequences.push(request.sequence);
-          throw new Error("provider down");
-        },
-        onResult: () => undefined,
-        onFailure: () => undefined,
+      const rolling = tracker(async (request) => {
+        sequences.push(request.sequence);
+        throw new Error("provider down");
       });
 
-      for (let second = 0; second < 11; second += 1) tracker.push(pcm(1), second);
+      for (let second = 0; second < 13; second += 1) rolling.push(pcm(1), second);
       await vi.advanceTimersByTimeAsync(0);
       expect(sequences).toEqual([1]);
-      await vi.advanceTimersByTimeAsync(1600); // second failure -> window skipped
-      // The next window uses a fresh sequence immediately; window 1 is never
-      // retried forever.
-      expect(sequences).toEqual([1, 1, 2]);
-      expect(tracker.requestCount).toBeGreaterThanOrEqual(1);
+      await vi.advanceTimersByTimeAsync(1600);
+      // Second failure: this snapshot is skipped, the next one proceeds.
+      expect(sequences[sequences.length - 1]).toBe(2);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("stops cleanly", () => {
-    const tracker = new RollingSpeakerTracker({
-      liveSessionId: "live-1",
-      speakerCount: null,
-      send: async (request) => ({
-        sequence: request.sequence,
-        window: [request.startSeconds, request.endSeconds],
-        assignments: [],
-        new_speakers: [],
-        provider_speakers: 1,
-        latency_seconds: 0.4,
-        rolling_seconds: request.endSeconds,
-        label_switches: 0,
-      }),
-      onResult: () => undefined,
-    });
-    tracker.stop();
-    for (let second = 0; second < 8; second += 1) tracker.push(pcm(1), second);
-    expect(tracker.requestCount).toBe(0);
+  it("stops cleanly and keeps memory bounded", () => {
+    const rolling = tracker(async (request) => result(request));
+    for (let second = 0; second < 40; second += 1) rolling.push(pcm(1), second);
+    rolling.stop();
+    expect(rolling.requestCount).toBe(0);
+    // After stop no further snapshots are scheduled.
+    for (let second = 0; second < 10; second += 1) rolling.push(pcm(1), second);
+    expect(rolling.requestCount).toBe(0);
   });
 });

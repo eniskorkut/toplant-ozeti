@@ -161,7 +161,7 @@ async def _finalize_live_session(
     migrated = await migrate_aliases(session, meeting_id=meeting_id, aliases=live.aliases)
     stored_speakers = 0
     for label, speaker in live.speakers.items():
-        intervals = [[round(start, 3), round(end, 3)] for start, end in speaker.intervals()]
+        intervals = [[round(start, 3), round(end, 3)] for start, end in speaker.committed]
         if not intervals:
             continue
         session.add(

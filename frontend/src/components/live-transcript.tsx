@@ -42,6 +42,14 @@ export function LiveTranscript({
   const listRef = useRef<HTMLOListElement | null>(null);
   const nearBottomRef = useRef(true);
 
+  // Always render committed utterances chronologically (late speaker patches must
+  // never reinsert or reorder them); the newest provisional line stays at the end.
+  const committed = lines
+    .filter((line) => !line.provisional)
+    .sort((left, right) => left.startSeconds - right.startSeconds || left.id - right.id);
+  const provisional = lines.filter((line) => line.provisional);
+  const ordered = [...committed, ...provisional];
+
   // Auto-scroll only while the user is already near the bottom.
   useEffect(() => {
     const list = listRef.current;
@@ -82,12 +90,12 @@ export function LiveTranscript({
         }}
         className="mt-2 max-h-72 space-y-1 overflow-y-auto pr-1"
       >
-        {lines.length === 0 ? (
+        {ordered.length === 0 ? (
           <li className="px-2 py-3 text-xs text-zinc-500 dark:text-zinc-400">
             Konuşma bekleniyor…
           </li>
         ) : null}
-        {lines.map((line) => {
+        {ordered.map((line) => {
           const toneIndex = line.canonical ? canonicalSpeakerIndex(line.canonical) : -1;
           const tone = toneIndex >= 0 ? SPEAKER_TONES[toneIndex % SPEAKER_TONES.length] : "";
           const display = line.canonical

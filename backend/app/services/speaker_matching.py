@@ -23,11 +23,15 @@ MIN_MARGIN_SECONDS = 0.3
 # distance from a new segment mean we cannot tell them apart.
 GAP_MARGIN_SECONDS = 0.5
 GAP_MARGIN_RATIO = 1.5
-# Splitting one person into several request-local labels happens at segment
-# boundaries, so a merge requires a short silence.
-MERGE_GAP_SECONDS = 0.75
-# ...or a short "fragment" label that overlaps the longer label of the same person.
+# Provider splits of one person are either overlapping sub-segments or almost
+# continuous speech. Anything else (a short turn after a real pause) may be the
+# OTHER person: it must stay a candidate instead of being absorbed.
+MERGE_GAP_SECONDS = 0.3
 FRAGMENT_MAX_SECONDS = 1.0
+# Claiming an unclaimed canonical across a pause: measured against the full-file
+# reference, the wider tolerance kept stability and agreement better than a tight
+# one (the long snapshots provide overlap evidence; this only covers resumptions).
+CONTINUATION_GAP_SECONDS = 2.0
 
 Interval = tuple[float, float]
 
@@ -302,6 +306,10 @@ def match_speakers(
                 continue
             existing = assigned.get(canonical_name)
             if existing is None:
+                if gap > CONTINUATION_GAP_SECONDS:
+                    # Not a continuation: leave the cluster as promotion evidence.
+                    pending.remove(provider_name)
+                    continue
                 matching[provider_name] = canonical_name
                 assigned[canonical_name] = provider_name
                 effective[canonical_name] = effective.get(canonical_name, []) + list(
@@ -316,7 +324,14 @@ def match_speakers(
                         provider_intervals[provider_name], provider_intervals[existing]
                     )
                 )
-                or total_seconds(provider_intervals[provider_name]) <= FRAGMENT_MAX_SECONDS
+                or (
+                    # A true provider split shows overlapping sub-segments of the
+                    # same voice; short duration alone is not evidence.
+                    not intervals_disjoint(
+                        provider_intervals[provider_name], provider_intervals[existing]
+                    )
+                    and total_seconds(provider_intervals[provider_name]) <= FRAGMENT_MAX_SECONDS
+                )
             ):
                 matching[provider_name] = canonical_name
                 effective[canonical_name] = effective.get(canonical_name, []) + list(

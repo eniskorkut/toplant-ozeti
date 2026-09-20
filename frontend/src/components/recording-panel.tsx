@@ -200,6 +200,7 @@ export function RecordingPanel() {
   const lineIdRef = useRef(0);
   const lastAudioEndRef = useRef<number | null>(null);
   const partialSeenRef = useRef(false);
+  const awaitingTimestampsRef = useRef(false);
   const metricsRef = useRef<{ partial: number[]; committed: number[]; label: number[] }>({
     partial: [],
     committed: [],
@@ -360,8 +361,13 @@ export function RecordingPanel() {
       previous.map((line) => {
         if (line.canonical) return line;
         const midpoint = (line.startSeconds + line.endSeconds) / 2;
+        // Only confirmed regions may label the transcript; the newest mutable
+        // tail stays provisional until a later snapshot confirms it.
         const match = result.assignments.find(
-          (assignment) => midpoint >= assignment.start - 0.5 && midpoint <= assignment.end + 0.5,
+          (assignment) =>
+            !assignment.provisional &&
+            midpoint >= assignment.start - 0.5 &&
+            midpoint <= assignment.end + 0.5,
         );
         if (!match) return line;
         if (!line.provisional) {
@@ -388,6 +394,7 @@ export function RecordingPanel() {
 
   const handlePartial = useCallback(
     (text: string) => {
+      awaitingTimestampsRef.current = false;
       markPartialRendered();
       const now = elapsedSeconds();
       if (!partialSeenRef.current && lastAudioEndRef.current !== null) {
@@ -417,11 +424,42 @@ export function RecordingPanel() {
   );
 
   const handleCommitted = useCallback(
-    (text: string, words: { text: string; start: number; end: number }[]) => {
+    (
+      text: string,
+      words: { text: string; start: number; end: number }[],
+      enrichment = false,
+    ) => {
       const now = elapsedSeconds();
       const start = words.length > 0 ? words[0].start : now;
       const end = words.length > 0 ? words[words.length - 1].end : now;
-      metricsRef.current.committed.push(Math.max(0, now - end));
+
+      if (enrichment && awaitingTimestampsRef.current) {
+        // Lifecycle identity: this event only adds timestamps to the utterance
+        // that was just committed. Patch it in place; never append a new line.
+        awaitingTimestampsRef.current = false;
+        setLiveLines((previous) => {
+          const next = [...previous];
+          const lastIndex = next.length - 1;
+          const last = next[lastIndex];
+          if (last && !last.provisional) {
+            next[lastIndex] = { ...last, startSeconds: start, endSeconds: end };
+          }
+          return next;
+        });
+        lastAudioEndRef.current = Math.max(lastAudioEndRef.current ?? 0, end);
+        if (words.length > 0) {
+          metricsRef.current.committed.push(Math.max(0, now - end));
+        }
+        if (lastRollingResultRef.current) {
+          attachSpeakerLabels(lastRollingResultRef.current);
+        }
+        return;
+      }
+
+      awaitingTimestampsRef.current = words.length === 0;
+      if (words.length > 0) {
+        metricsRef.current.committed.push(Math.max(0, now - end));
+      }
       lastAudioEndRef.current = end;
       partialSeenRef.current = false;
       setLiveLines((previous) => {
@@ -453,7 +491,9 @@ export function RecordingPanel() {
       }
       let createdSessionId: string | null = null;
       try {
-        const session = await createLiveSession();
+        const requestedCount =
+          liveSpeakerChoice === "auto" ? null : Number(liveSpeakerChoice);
+        const session = await createLiveSession(requestedCount);
         createdSessionId = session.live_session_id;
         setLiveSessionId(createdSessionId);
 
@@ -584,6 +624,9 @@ export function RecordingPanel() {
     lineIdRef.current = 0;
     lastAudioEndRef.current = null;
     partialSeenRef.current = false;
+    awaitingTimestampsRef.current = false;
+    setAliases({});
+    setLiveSessionId(null);
     captureStartedAtRef.current = null;
     firstPcmAtRef.current = null;
     wsConnectedAtRef.current = null;

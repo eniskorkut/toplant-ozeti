@@ -271,9 +271,11 @@ ELEVENLABS_DIARIZATION_THRESHOLD=           # optional; only sent without a know
   doomed job.
 - **Live ElevenLabs transcript (provider=elevenlabs):** while recording, Scribe v2 Realtime
   (single-use token minted by `POST /api/v1/transcription/providers/elevenlabs/realtime-token`)
-  streams partial/committed text; rolling 6 s / 2 s-overlap PCM windows are sent to
+  streams partial/committed text; rolling 12 s lookback snapshots updated every 4 s are sent to
   `POST /api/v1/live-transcription/sessions/{id}/speaker-window` and mapped onto stable
-  `Kişi N` labels by temporal overlap (provider speaker ids are request-local). Speaker
+  `Kişi N` labels by temporal overlap across heavily overlapping snapshots (provider
+  speaker ids are request-local; a new speaker is only confirmed after evidence from
+  multiple snapshots, and the newest seconds stay provisional). Speaker
   names typed during recording (`PUT .../speakers/{canonical}/alias`) are meeting-scoped and
   migrate to the meeting on upload; the final full-file Scribe v2 pass is authoritative and
   reconciles its speakers onto the live canonical labels. No local ML (whisper/sherpa) takes

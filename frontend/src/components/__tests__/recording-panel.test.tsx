@@ -40,7 +40,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 const scribeCallbacks: Array<{
   onPartial: (text: string) => void;
-  onCommitted: (text: string, words: unknown[]) => void;
+  onCommitted: (text: string, words: unknown[], enrichment: boolean) => void;
   onStatus: (status: string) => void;
   onTimeline?: (event: string, atMs: number) => void;
 }> = [];
@@ -522,35 +522,41 @@ async function startLiveRecording() {
   });
 }
 
+function rollingResult(overrides: Record<string, unknown> = {}) {
+  return {
+    sequence: 1,
+    window: [0, 8],
+    assignments: [
+      {
+        canonical_speaker: "Kişi 1",
+        is_new: true,
+        confidence: null,
+        evidence: "promoted",
+        provisional: false,
+        start: 0,
+        end: 8,
+        speech_seconds: 4,
+      },
+    ],
+    new_speakers: ["Kişi 1"],
+    promoted_speakers: ["Kişi 1"],
+    ambiguous_speakers: 0,
+    candidate_speakers: 0,
+    confirmed_speakers: ["Kişi 1"],
+    provider_speakers: 1,
+    latency_seconds: 0.5,
+    rolling_seconds: 8,
+    label_switches: 0,
+    ...overrides,
+  };
+}
+
 function emitChunks(seconds: number) {
   for (let second = 0; second < seconds; second += 1) {
     pcmOptions.current?.onChunk(new Int16Array(16_000).buffer, second);
   }
 }
 
-function rollingResult(overrides: Record<string, unknown> = {}) {
-  return {
-    sequence: 1,
-    window: [0, 4],
-    assignments: [
-      {
-        canonical_speaker: "Kişi 1",
-        is_new: true,
-        confidence: null,
-        evidence: "overlap",
-        start: 0,
-        end: 6,
-        speech_seconds: 2,
-      },
-    ],
-    new_speakers: ["Kişi 1"],
-    provider_speakers: 1,
-    latency_seconds: 0.6,
-    rolling_seconds: 4,
-    label_switches: 0,
-    ...overrides,
-  };
-}
 
 describe("RecordingPanel live ElevenLabs mode", () => {
   beforeEach(() => {
@@ -580,7 +586,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("Yarın nereye gideceğiz?", [
         { text: "Yarın", start: 1, end: 2 },
-      ]);
+      ], false);
     });
     expect(screen.queryByText("Yarın nereye")).toBeNull();
     expect(screen.getAllByText("Yarın nereye gideceğiz?")).toHaveLength(1);
@@ -591,7 +597,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("Kentpark'a gideriz.", [
         { text: "Kentpark'a", start: 3, end: 4 },
-      ]);
+      ], false);
     });
     expect(screen.queryByText("Kentpark'a")).toBeNull();
     expect(screen.getByText("Kentpark'a gideriz.")).toBeTruthy();
@@ -629,7 +635,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("bağlantı kopmadan önce", [
         { text: "bağlantı", start: 1, end: 2 },
-      ]);
+      ], false);
     });
 
     await act(async () => {
@@ -656,12 +662,12 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("metin aynı kalmalı", [
         { text: "metin", start: 1, end: 2 },
-      ]);
+      ], false);
     });
     const before = screen.getByText("metin aynı kalmalı").textContent;
 
     await act(async () => {
-      emitChunks(6);
+      emitChunks(8);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -683,19 +689,19 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("Yarın nereye gideceğiz?", [
         { text: "Yarın", start: 1, end: 2 },
-      ]);
+      ], false);
     });
     expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
 
     await act(async () => {
-      emitChunks(6);
+      emitChunks(8);
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(sendSpeakerWindow).toHaveBeenCalledWith(
       "live-1",
-      expect.objectContaining({ sequence: 1, startSeconds: 0, endSeconds: 6 }),
+      expect.objectContaining({ sequence: 1, startSeconds: 0, endSeconds: 8 }),
     );
     expect(screen.queryByText("Konuşmacı belirleniyor")).toBeNull();
     expect(screen.getByText("Kişi 1")).toBeTruthy();
@@ -711,8 +717,8 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await startLiveRecording();
 
     await act(async () => {
-      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
-      emitChunks(6);
+      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }], false);
+      emitChunks(8);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -733,7 +739,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
 
     // Future lines with the same canonical label display the alias too.
     await act(async () => {
-      scribeCallbacks[0].onCommitted("ikinci cümle", [{ text: "ikinci", start: 2, end: 3 }]);
+      scribeCallbacks[0].onCommitted("ikinci cümle", [{ text: "ikinci", start: 2, end: 3 }], false);
     });
     expect(screen.getAllByText("Ahmet").length).toBeGreaterThanOrEqual(2);
   });
@@ -747,8 +753,8 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await selectLiveProvider();
     await startLiveRecording();
     await act(async () => {
-      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }]);
-      emitChunks(6);
+      scribeCallbacks[0].onCommitted("ilk cümle", [{ text: "ilk", start: 1, end: 2 }], false);
+      emitChunks(8);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -806,8 +812,8 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await act(async () => {
       scribeCallbacks[0].onCommitted("metin kaybolmasın", [
         { text: "metin", start: 1, end: 2 },
-      ]);
-      emitChunks(6);
+      ], false);
+      emitChunks(8);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -828,7 +834,7 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await selectLiveProvider();
     await startLiveRecording();
     await act(async () => {
-      scribeCallbacks[0].onCommitted("geçici metin", [{ text: "geçici", start: 1, end: 2 }]);
+      scribeCallbacks[0].onCommitted("geçici metin", [{ text: "geçici", start: 1, end: 2 }], false);
     });
 
     await act(async () => {
@@ -857,5 +863,139 @@ describe("RecordingPanel live ElevenLabs mode", () => {
     await recordAndUpload();
     expect(createLiveSession).not.toHaveBeenCalled();
     expect(getRealtimeToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("RecordingPanel live text lifecycle", () => {
+  beforeEach(() => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+  });
+
+  async function startSession() {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+  }
+
+  it("enriches the same committed utterance with timestamps instead of duplicating", async () => {
+    await startSession();
+
+    await act(async () => {
+      scribeCallbacks[0].onPartial("Ben öyle biri değilim");
+    });
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("Ben öyle biri değilim.", [], false);
+    });
+    await act(async () => {
+      scribeCallbacks[0].onCommitted(
+        "Ben öyle biri değilim.",
+        [{ text: "Ben", start: 10, end: 12 }],
+        true,
+      );
+    });
+
+    expect(screen.getAllByText("Ben öyle biri değilim.")).toHaveLength(1);
+    expect(screen.queryByText("Ben öyle biri değilim")).toBeNull();
+  });
+
+  it("renders committed utterances chronologically even when timestamps arrive late", async () => {
+    await startSession();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("ikinci", [], false);
+    });
+    await act(async () => {
+      scribeCallbacks[0].onCommitted(
+        "ikinci",
+        [{ text: "ikinci", start: 30, end: 31 }],
+        true,
+      );
+    });
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("birinci", [{ text: "birinci", start: 5, end: 6 }], false);
+    });
+
+    const items = screen.getAllByRole("listitem");
+    const texts = items.map((item) => item.textContent ?? "");
+    expect(texts[0]).toContain("birinci");
+    expect(texts[1]).toContain("ikinci");
+  });
+
+  it("labels only confirmed regions, never the mutable tail", async () => {
+    sendSpeakerWindow.mockResolvedValue(
+      rollingResult({
+        assignments: [
+          {
+            canonical_speaker: "Kişi 1",
+            is_new: true,
+            confidence: null,
+            evidence: "promoted",
+            provisional: true,
+            start: 0,
+            end: 8,
+            speech_seconds: 4,
+          },
+        ],
+      }),
+    );
+    await startSession();
+
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("geçici bölge", [{ text: "geçici", start: 5, end: 6 }], false);
+      emitChunks(8);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+    expect(screen.queryByText("Kişi 1")).toBeNull();
+  });
+
+  it("starts a new recording with a fresh registry and no aliases", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    await startSession();
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("ilk", [{ text: "ilk", start: 1, end: 2 }], false);
+      emitChunks(8);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Kişi 1 · Konuşmacı adını düzenle/ }));
+    });
+    fireEvent.change(screen.getByLabelText("Ad"), { target: { value: "Ahmet" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydet" }));
+    });
+    expect(screen.getByText("Ahmet")).toBeTruthy();
+
+    // Upload failure returns the panel to idle so a new recording can start.
+    uploadRecording.mockRejectedValueOnce(new Error("upload failed"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+    });
+
+    expect(screen.queryByText("Ahmet")).toBeNull();
+    expect(createLiveSession).toHaveBeenCalledTimes(2);
+    expect(createLiveSession).toHaveBeenLastCalledWith(null);
+  });
+
+  it("passes the known speaker count to the live session", async () => {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    fireEvent.change(screen.getByLabelText("Konuşmacı sayısı (canlı)"), {
+      target: { value: "2" },
+    });
+    await startLiveRecording();
+    expect(createLiveSession).toHaveBeenCalledWith(2);
   });
 });

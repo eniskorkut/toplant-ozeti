@@ -1,23 +1,25 @@
 /**
- * Rolling speaker tracker: buffers realtime PCM chunks and posts overlapping
- * windows to our backend (which calls Scribe v2 batch for diarization).
+ * Long-context delayed speaker tracking: buffers realtime PCM and posts sliding
+ * snapshots to our backend (ElevenLabs Scribe v2 batch diarization).
  *
- * Windows never grow: only the newest `windowSeconds` are uploaded, so a long
- * meeting does not re-upload its whole history. Failures are non-fatal — live
- * text and the recording continue, speaker labels simply stay provisional.
+ * Each snapshot re-reads a LONGER conversational context than the previous
+ * architecture (lookback seconds instead of one short independent window), which
+ * is what the full-file reference showed Scribe needs. Snapshots overlap heavily,
+ * so the mapper has strong continuity evidence; memory stays bounded because old
+ * chunks are dropped once they fall out of the lookback.
+ *
+ * Failures are non-fatal — live text and the recording continue, speaker labels
+ * simply stay provisional.
  */
 
 import type { SpeakerWindowResult } from "@/lib/api";
 
-// Selected by measured benchmark (data/meetings/b1095740…): 6 s windows with 2 s
-// overlap gave zero label switches/fragments on rapidly alternating speech, while
-// 4 s windows fragmented; 8–10 s windows only added label delay.
-export const WINDOW_SECONDS = 6;
-export const OVERLAP_SECONDS = 2;
-export const STEP_SECONDS = WINDOW_SECONDS - OVERLAP_SECONDS;
-/** One delayed retry per window; after that the window is skipped, never looped. */
-export const MAX_WINDOW_RETRIES = 2;
+/** Selected by benchmark against the full-file reference (see diag harness). */
+export const LOOKBACK_SECONDS = 12;
+export const STEP_SECONDS = 4;
 export const RETRY_DELAY_MS = 1500;
+export const MAX_WINDOW_RETRIES = 2;
+const FIRST_ATTEMPT_MULTIPLIER = 2;
 
 export type RollingTrackerOptions = {
   liveSessionId: string;
@@ -28,6 +30,7 @@ export type RollingTrackerOptions = {
     endSeconds: number;
     sequence: number;
     speakerCount: number | null;
+    stableUntil: number;
   }) => Promise<SpeakerWindowResult>;
   onResult: (result: SpeakerWindowResult) => void;
   onFailure?: (error: unknown) => void;
@@ -37,18 +40,18 @@ type Chunk = { pcm: Int16Array; startSeconds: number };
 
 export class RollingSpeakerTracker {
   private chunks: Chunk[] = [];
-  private nextWindowStart = 0;
+  private nextAttempt = STEP_SECONDS * FIRST_ATTEMPT_MULTIPLIER;
   private sequence = 1;
   private inFlight = false;
   private stopped = false;
   private failureCount = 0;
   private retryTimer: number | null = null;
-  private readonly step = STEP_SECONDS;
+  private uploadedSecondsTotal = 0;
 
   constructor(private readonly options: RollingTrackerOptions) {}
 
   get uploadedSeconds(): number {
-    return this.sequence === 1 ? 0 : (this.sequence - 1) * WINDOW_SECONDS;
+    return Math.round(this.uploadedSecondsTotal * 1000) / 1000;
   }
 
   get requestCount(): number {
@@ -59,49 +62,61 @@ export class RollingSpeakerTracker {
   push(pcm: Int16Array, startSeconds: number): void {
     if (this.stopped) return;
     this.chunks.push({ pcm, startSeconds });
+    this.trim();
     this.maybeSend();
+  }
+
+  private endSeconds(): number {
+    const last = this.chunks[this.chunks.length - 1];
+    return last ? last.startSeconds + last.pcm.length / 16_000 : 0;
+  }
+
+  private trim(): void {
+    const keepFrom = Math.max(0, this.nextAttempt - LOOKBACK_SECONDS);
+    const keep = Math.round(keepFrom * 16_000);
+    this.chunks = this.chunks.filter(
+      (chunk) => Math.round(chunk.startSeconds * 16_000) + chunk.pcm.length > keep,
+    );
   }
 
   private maybeSend(): void {
     if (this.inFlight || this.stopped || this.retryTimer !== null) return;
     if (this.chunks.length === 0) return;
-    const bufferEnd = this.endSeconds();
-    if (bufferEnd - this.nextWindowStart < WINDOW_SECONDS) return;
+    if (this.endSeconds() < this.nextAttempt) return;
 
-    const start = this.nextWindowStart;
-    const end = start + WINDOW_SECONDS;
-    const pcm = this.slice(start, end);
+    const snapshotEnd = this.nextAttempt;
+    const snapshotStart = Math.max(0, snapshotEnd - LOOKBACK_SECONDS);
+    const pcm = this.slice(snapshotStart, snapshotEnd);
     if (!pcm) return;
 
-    const pcmBlob = new Blob([pcm.buffer as ArrayBuffer], {
-      type: "application/octet-stream",
-    });
+    const stableUntil = Math.max(snapshotStart, snapshotEnd - STEP_SECONDS);
     const sequence = this.sequence;
+    const uploaded = snapshotEnd - snapshotStart;
     this.inFlight = true;
     this.options
       .send({
-        pcm: pcmBlob,
-        startSeconds: start,
-        endSeconds: end,
+        pcm: new Blob([pcm.buffer as ArrayBuffer], { type: "application/octet-stream" }),
+        startSeconds: snapshotStart,
+        endSeconds: snapshotEnd,
         sequence,
         speakerCount: this.options.speakerCount,
+        stableUntil,
       })
       .then((result) => {
         this.failureCount = 0;
         this.sequence += 1;
-        this.nextWindowStart += this.step;
-        this.dropBefore(this.nextWindowStart);
+        this.uploadedSecondsTotal += uploaded;
+        this.nextAttempt += STEP_SECONDS;
         this.options.onResult(result);
       })
       .catch((error) => {
         this.failureCount += 1;
         this.options.onFailure?.(error);
         if (this.failureCount >= MAX_WINDOW_RETRIES) {
-          // Give up on this window (bounded), keep the timeline consistent.
+          // Bounded: skip this snapshot and continue with the next one.
           this.failureCount = 0;
           this.sequence += 1;
-          this.nextWindowStart += this.step;
-          this.dropBefore(this.nextWindowStart);
+          this.nextAttempt += STEP_SECONDS;
         } else {
           this.retryTimer = window.setTimeout(() => {
             this.retryTimer = null;
@@ -115,11 +130,6 @@ export class RollingSpeakerTracker {
       });
   }
 
-  private endSeconds(): number {
-    const last = this.chunks[this.chunks.length - 1];
-    return last.startSeconds + last.pcm.length / 16_000;
-  }
-
   private slice(startSeconds: number, endSeconds: number): Int16Array | null {
     const startSample = Math.round(startSeconds * 16_000);
     const endSample = Math.round(endSeconds * 16_000);
@@ -131,23 +141,13 @@ export class RollingSpeakerTracker {
       const from = Math.max(chunkStart, startSample);
       const to = Math.min(chunkEnd, endSample);
       if (to <= from) continue;
-      output.set(
-        chunk.pcm.subarray(from - chunkStart, to - chunkStart),
-        from - startSample,
-      );
+      output.set(chunk.pcm.subarray(from - chunkStart, to - chunkStart), from - startSample);
       written += to - from;
     }
     if (written === 0) return null;
-    // The window must be complete: a partial tail would misalign timestamps.
+    // Require most of the snapshot: a sparse tail would misalign timestamps.
     if (written < output.length * 0.5) return null;
     return output;
-  }
-
-  private dropBefore(startSeconds: number): void {
-    const keep = Math.round(startSeconds * 16_000);
-    this.chunks = this.chunks.filter(
-      (chunk) => Math.round(chunk.startSeconds * 16_000) + chunk.pcm.length > keep,
-    );
   }
 
   stop(): void {

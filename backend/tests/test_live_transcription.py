@@ -65,6 +65,12 @@ def make_session(client: TestClient) -> str:
     return response.json()["live_session_id"]
 
 
+def confirm_first_speaker(client: TestClient, live_session_id: str) -> None:
+    """Two overlapping snapshots with the same cluster promote Kişi 1."""
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    submit_window(client, live_session_id, start=4, end=12, sequence=2)
+
+
 def submit_window(
     client: TestClient,
     live_session_id: str,
@@ -214,25 +220,35 @@ def test_window_validation_and_success(context, monkeypatch) -> None:
     assert submit_window(client, live_session_id, start=0, end=0.5, sequence=1).status_code == 422
     # payload does not match declared duration
     mismatch = submit_window(
-        client, live_session_id, start=0, end=4, sequence=1, length_bytes=SECOND
+        client, live_session_id, start=0, end=8, sequence=1, length_bytes=SECOND
     )
     assert mismatch.status_code == 422
     # wrong sequence
-    assert submit_window(client, live_session_id, start=0, end=4, sequence=9).status_code == 409
+    assert submit_window(client, live_session_id, start=0, end=8, sequence=9).status_code == 409
     assert calls == []
 
-    response = submit_window(client, live_session_id, start=0, end=4, sequence=1)
+    response = submit_window(client, live_session_id, start=0, end=8, sequence=1)
     assert response.status_code == 200
     body = response.json()
     assert body["sequence"] == 1
-    assert body["window"] == [0.0, 4.0]
-    assert body["assignments"][0]["canonical_speaker"] == "Kişi 1"
-    assert body["assignments"][0]["is_new"] is True
+    assert body["window"] == [0.0, 8.0]
+    # One snapshot is only evidence, never a canonical speaker.
+    assert body["assignments"] == []
+    assert body["confirmed_speakers"] == []
+    assert body["candidate_speakers"] == 1
     assert body["provider_speakers"] == 1
-    assert calls == [{"bytes": 4 * SECOND, "speaker_count": None}]
+    assert calls == [{"bytes": 8 * SECOND, "speaker_count": None}]
+
+    # A second overlapping snapshot confirms the first speaker as Kişi 1.
+    second = submit_window(client, live_session_id, start=4, end=12, sequence=2)
+    assert second.status_code == 200
+    promoted = second.json()
+    assert promoted["confirmed_speakers"] == ["Kişi 1"]
+    assert promoted["assignments"][0]["canonical_speaker"] == "Kişi 1"
+    assert promoted["assignments"][0]["is_new"] is True
 
     # next sequence expected
-    assert submit_window(client, live_session_id, start=4, end=8, sequence=1).status_code == 409
+    assert submit_window(client, live_session_id, start=8, end=16, sequence=1).status_code == 409
 
 
 def test_window_timestamps_are_offset_to_global_time(context, monkeypatch) -> None:
@@ -245,9 +261,12 @@ def test_window_timestamps_are_offset_to_global_time(context, monkeypatch) -> No
         ),
     )
 
-    response = submit_window(client, live_session_id, start=10.0, end=14.0, sequence=1)
+    # The same window twice: the second snapshot promotes Kişi 1.
+    submit_window(client, live_session_id, start=10.0, end=18.0, sequence=1)
+    response = submit_window(client, live_session_id, start=10.0, end=18.0, sequence=2)
     body = response.json()
 
+    assert body["confirmed_speakers"] == ["Kişi 1"]
     assert body["assignments"][0]["start"] == 10.0
     assert body["assignments"][0]["end"] == 11.5
 
@@ -267,16 +286,21 @@ def test_known_speaker_count_is_forwarded(context, monkeypatch) -> None:
     assert seen["speaker_count"] == 2
 
 
-def test_stable_mapping_across_windows_and_revision_of_the_tail(context, monkeypatch) -> None:
+def test_request_local_ids_are_mapped_and_unmatched_clusters_wait(context, monkeypatch) -> None:
     client, _, _, _ = context
     live_session_id = make_session(client)
 
     windows = [
-        # window 1: provider calls the first person speaker_0
+        # snapshot 1: the first person (only evidence so far)
         {"speaker_0": [(0.5, 2.5)]},
-        # window 2 (starts at 2s): provider numbering swapped; the shared region
-        # (2.0-3.0) is the only evidence, so speaker_1 stays Kişi 1.
-        {"speaker_1": [(0.0, 1.0)], "speaker_0": [(1.5, 3.5)]},
+        # snapshot 2: same cluster again -> Kişi 1 confirmed
+        {"speaker_0": [(0.0, 2.5)]},
+        # snapshot 3: numbering swapped, overlap keeps Kişi 1
+        {"speaker_1": [(0.2, 0.8)]},
+        # snapshot 4: a different, comparable cluster becomes a candidate
+        {"speaker_0": [(0.0, 1.2)]},
+        # snapshot 5: the candidate persists -> promoted densely as Kişi 2
+        {"speaker_0": [(0.0, 1.2)]},
     ]
 
     def fake_window(pcm, *, settings, requested_speaker_count=None):
@@ -284,17 +308,22 @@ def test_stable_mapping_across_windows_and_revision_of_the_tail(context, monkeyp
 
     monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
 
-    first = submit_window(client, live_session_id, start=0, end=3, sequence=1).json()
-    assert first["assignments"][0]["canonical_speaker"] == "Kişi 1"
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    second = submit_window(client, live_session_id, start=4, end=12, sequence=2).json()
+    assert second["confirmed_speakers"] == ["Kişi 1"]
 
-    second = submit_window(client, live_session_id, start=2, end=6, sequence=2).json()
-    by_speaker = {item["canonical_speaker"]: item for item in second["assignments"]}
-    assert set(by_speaker) == {"Kişi 1", "Kişi 2"}
-    # speaker_1 overlaps Kişi 1's committed history -> stays Kişi 1
-    assert by_speaker["Kişi 1"]["is_new"] is False
-    assert by_speaker["Kişi 2"]["is_new"] is True
-    assert second["new_speakers"] == ["Kişi 2"]
-    assert second["label_switches"] == 1
+    # Provider renumbers speakers between requests; overlap still maps to Kişi 1.
+    third = submit_window(client, live_session_id, start=4, end=12, sequence=3).json()
+    labels = [item["canonical_speaker"] for item in third["assignments"]]
+    assert labels == ["Kişi 1"]
+    assert third["confirmed_speakers"] == ["Kişi 1"]
+
+    fourth = submit_window(client, live_session_id, start=8, end=16, sequence=4).json()
+    assert fourth["candidate_speakers"] == 1  # no runaway Kişi 2 yet
+
+    fifth = submit_window(client, live_session_id, start=10, end=18, sequence=5).json()
+    assert fifth["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+    assert "Kişi 2" in fifth["promoted_speakers"]
 
 
 def test_rolling_failure_is_safe_and_does_not_consume_sequence(context, monkeypatch) -> None:
@@ -305,7 +334,7 @@ def test_rolling_failure_is_safe_and_does_not_consume_sequence(context, monkeypa
         raise ProviderUnavailableError("provider down")
 
     monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", failing)
-    response = submit_window(client, live_session_id, start=0, end=4, sequence=1)
+    response = submit_window(client, live_session_id, start=0, end=8, sequence=1)
     assert response.status_code == 503
 
     session = store.get(live_session_id)
@@ -332,7 +361,7 @@ def test_rolling_503_when_elevenlabs_not_configured(tmp_path: Path, monkeypatch)
     try:
         client = TestClient(app)
         live_session_id = make_session(client)
-        response = submit_window(client, live_session_id, start=0, end=4, sequence=1)
+        response = submit_window(client, live_session_id, start=0, end=8, sequence=1)
         assert response.status_code == 503
     finally:
         app.dependency_overrides.clear()
@@ -351,7 +380,7 @@ def test_live_alias_set_update_reset(context, monkeypatch) -> None:
             {"speaker_0": [(0.0, 2.0)]}
         ),
     )
-    submit_window(client, live_session_id, start=0, end=4, sequence=1)
+    confirm_first_speaker(client, live_session_id)
 
     url = f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/Kişi 1/alias"
     assert client.put(url, json={"display_name": "  Ahmet  "}).json()["display_name"] == "Ahmet"
@@ -372,7 +401,7 @@ def test_alias_validation_rejects_empty_control_and_long_names(context, monkeypa
             {"speaker_0": [(0.0, 2.0)]}
         ),
     )
-    submit_window(client, live_session_id, start=0, end=4, sequence=1)
+    confirm_first_speaker(client, live_session_id)
     url = f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/Kişi 1/alias"
 
     assert client.put(url, json={"display_name": "   "}).status_code == 422
@@ -398,7 +427,7 @@ def test_aliases_are_isolated_between_live_sessions(context, monkeypatch) -> Non
     first = make_session(client)
     second = make_session(client)
     for live_session_id in (first, second):
-        submit_window(client, live_session_id, start=0, end=4, sequence=1)
+        confirm_first_speaker(client, live_session_id)
 
     client.put(
         f"/api/v1/live-transcription/sessions/{first}/speakers/Kişi 1/alias",
@@ -484,7 +513,7 @@ def test_alias_migration_live_session_to_meeting_and_meeting_isolation(
         ),
     )
     live_session_id = make_session(client)
-    submit_window(client, live_session_id, start=0, end=4, sequence=1)
+    confirm_first_speaker(client, live_session_id)
     client.put(
         f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/Kişi 1/alias",
         json={"display_name": "Ahmet"},
@@ -664,3 +693,88 @@ def test_token_endpoint_calls_provider_with_permanent_key_only_server_side(monke
     assert token == TOKEN
     assert captured["url"].endswith("/v1/single-use-token/realtime_scribe")
     assert captured["headers"] == {"xi-api-key": KEY}
+
+
+def test_new_session_registry_starts_at_kisi_1_and_is_dense(context, monkeypatch) -> None:
+    client, _, _, store = context
+    windows = [
+        {"speaker_0": [(0.5, 2.5)]},
+        {"speaker_0": [(0.0, 2.5)]},
+        {"speaker_0": [(0.0, 2.0)], "speaker_1": [(3.0, 5.0)]},
+        {"speaker_0": [(0.0, 2.0)], "speaker_1": [(3.0, 5.0)]},
+        {"speaker_0": [(0.5, 2.5)]},
+        {"speaker_0": [(0.0, 2.5)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    # First session: Kişi 1 then a densely numbered Kişi 2.
+    first = make_session(client)
+    submit_window(client, first, start=0, end=8, sequence=1)
+    submit_window(client, first, start=4, end=12, sequence=2)
+    submit_window(client, first, start=8, end=16, sequence=3)
+    second = submit_window(client, first, start=12, end=20, sequence=4).json()
+    assert second["confirmed_speakers"] == ["Kişi 1", "Kişi 2"]
+
+    # A brand-new session never inherits numbering from the previous one.
+    fresh = make_session(client)
+    submit_window(client, fresh, start=0, end=8, sequence=1)
+    submit_window(client, fresh, start=4, end=12, sequence=2)
+    state = client.get(f"/api/v1/live-transcription/sessions/{fresh}").json()
+    assert state["confirmed_speakers"] == ["Kişi 1"]
+    assert state["aliases"] == {}
+    assert store.get(fresh).speakers.keys() == {"Kişi 1"}
+
+
+def test_known_speaker_count_caps_confirmed_speakers(context, monkeypatch) -> None:
+    client, _, _, _ = context
+    response = client.post("/api/v1/live-transcription/sessions?speaker_count=1")
+    live_session_id = response.json()["live_session_id"]
+
+    windows = [
+        {"speaker_0": [(0.5, 2.5)]},
+        {"speaker_0": [(0.0, 2.5)]},
+        {"speaker_0": [(0.0, 2.0)], "speaker_1": [(3.0, 5.0)]},
+        {"speaker_0": [(0.0, 2.0)], "speaker_1": [(3.0, 5.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    for sequence, start in ((2, 4), (3, 8)):
+        body = submit_window(
+            client, live_session_id, start=start, end=start + 8, sequence=sequence
+        ).json()
+        assert body["confirmed_speakers"] == ["Kişi 1"]
+    # The excess cluster stays a candidate even after repeated evidence: the known
+    # count caps confirmed speakers at 1.
+    assert body["candidate_speakers"] >= 1
+
+
+def test_ambiguous_mapping_creates_no_canonical(context, monkeypatch) -> None:
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    windows = [
+        {"speaker_0": [(0.5, 2.5)]},
+        {"speaker_0": [(0.0, 2.5)]},
+        # Two comparable clusters in one snapshot: one continues Kişi 1, the other
+        # is only a candidate. Nothing may mint a Kişi 2 on a single snapshot.
+        {"speaker_0": [(0.0, 2.0)], "speaker_1": [(3.0, 5.0)]},
+    ]
+
+    def fake_window(pcm, *, settings, requested_speaker_count=None):
+        return window_words(windows.pop(0))
+
+    monkeypatch.setattr("app.routers.live_transcription.transcribe_pcm_window", fake_window)
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+    submit_window(client, live_session_id, start=4, end=12, sequence=2)
+    body = submit_window(client, live_session_id, start=8, end=16, sequence=3).json()
+    assert body["confirmed_speakers"] == ["Kişi 1"]
+    assert body["candidate_speakers"] >= 1

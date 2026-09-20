@@ -283,10 +283,14 @@ export async function getRealtimeToken(): Promise<RealtimeToken> {
   });
 }
 
-export async function createLiveSession(): Promise<{ live_session_id: string }> {
-  return request<{ live_session_id: string }>("/api/v1/live-transcription/sessions", {
-    method: "POST",
-  });
+export async function createLiveSession(
+  speakerCount: number | null = null,
+): Promise<{ live_session_id: string }> {
+  const query = speakerCount !== null ? `?speaker_count=${speakerCount}` : "";
+  return request<{ live_session_id: string }>(
+    `/api/v1/live-transcription/sessions${query}`,
+    { method: "POST" },
+  );
 }
 
 export async function deleteLiveSession(liveSessionId: string): Promise<void> {
@@ -307,6 +311,9 @@ export type SpeakerAssignment = {
   canonical_speaker: string;
   is_new: boolean;
   confidence: number | null;
+  evidence: string;
+  /** Newest mutable tail: may not label the transcript yet. */
+  provisional: boolean;
   start: number;
   end: number;
   speech_seconds: number;
@@ -317,6 +324,10 @@ export type SpeakerWindowResult = {
   window: [number, number];
   assignments: SpeakerAssignment[];
   new_speakers: string[];
+  promoted_speakers: string[];
+  ambiguous_speakers: number;
+  candidate_speakers: number;
+  confirmed_speakers: string[];
   provider_speakers: number;
   latency_seconds: number;
   rolling_seconds: number;
@@ -329,6 +340,8 @@ export type SpeakerWindowRequest = {
   endSeconds: number;
   sequence: number;
   speakerCount: number | null;
+  /** End of the confirmable region; newest step after this stays provisional. */
+  stableUntil: number;
 };
 
 export async function sendSpeakerWindow(
@@ -340,6 +353,7 @@ export async function sendSpeakerWindow(
   form.append("start_seconds", options.startSeconds.toFixed(3));
   form.append("end_seconds", options.endSeconds.toFixed(3));
   form.append("sequence", String(options.sequence));
+  form.append("stable_until", options.stableUntil.toFixed(3));
   if (options.speakerCount !== null) {
     form.append("speaker_count", String(options.speakerCount));
   }

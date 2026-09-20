@@ -28,13 +28,18 @@ export type RealtimeTimelineEvent =
   | "connected"
   | "partial_event"
   | "committed_event"
+  | "committed_enrichment"
   | "reconnect_attempt"
   | "failed"
   | "closed";
 
 export type RealtimeCallbacks = {
   onPartial: (text: string) => void;
-  onCommitted: (text: string, words: RealtimeWord[]) => void;
+  /**
+   * `enrichment` is true when this event only adds timestamps to the previously
+   * committed utterance (lifecycle identity, not text deduplication).
+   */
+  onCommitted: (text: string, words: RealtimeWord[], enrichment: boolean) => void;
   onStatus: (status: RealtimeStatus) => void;
   /** Development-safe timing hooks: no transcript content, timing only. */
   onTimeline?: (event: RealtimeTimelineEvent, atMs: number) => void;
@@ -72,6 +77,8 @@ export class ScribeRealtimeClient {
   private reconnects = 0;
   private closedByUser = false;
   private connecting = false;
+  /** A plain commit awaiting its timestamp enrichment event. */
+  private awaitingTimestamps = false;
   private readonly maxReconnects: number;
 
   constructor(
@@ -163,17 +170,26 @@ export class ScribeRealtimeClient {
     if (type === "partial_transcript") {
       const text = String(payload.text ?? "").trim();
       if (text) {
+        this.awaitingTimestamps = false;
         this.callbacks.onTimeline?.("partial_event", performance.now());
         this.callbacks.onPartial(text);
       }
-    } else if (
-      type === "committed_transcript" ||
-      type === "committed_transcript_with_timestamps"
-    ) {
+    } else if (type === "committed_transcript") {
       const text = String(payload.text ?? "").trim();
       if (!text) return;
+      this.awaitingTimestamps = true;
       this.callbacks.onTimeline?.("committed_event", performance.now());
-      this.callbacks.onCommitted(text, parseWords(payload));
+      this.callbacks.onCommitted(text, [], false);
+    } else if (type === "committed_transcript_with_timestamps") {
+      const text = String(payload.text ?? "").trim();
+      if (!text) return;
+      const enrichment = this.awaitingTimestamps;
+      this.awaitingTimestamps = false;
+      this.callbacks.onTimeline?.(
+        enrichment ? "committed_enrichment" : "committed_event",
+        performance.now(),
+      );
+      this.callbacks.onCommitted(text, parseWords(payload), enrichment);
     }
   }
 

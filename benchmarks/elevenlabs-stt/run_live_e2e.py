@@ -31,8 +31,9 @@ from websockets.sync.client import connect as ws_connect
 API = "http://localhost:8000"
 AUDIO = Path("/data/meetings/8266cc18930b40e6a3740c48bc543705/processing.wav")
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
-WINDOW_SECONDS = 6.0
-OVERLAP_SECONDS = 2.0
+LOOKBACK_SECONDS = 12.0
+STEP_SECONDS = 4.0
+FIRST_ATTEMPT_SECONDS = 8.0
 # Browser cadence: PcmCapture emits ~100 ms chunks (1600 samples at 16 kHz).
 CHUNK_SECONDS = 0.1
 PARTIAL_MIN_GAP_SECONDS = 1.0
@@ -95,8 +96,8 @@ def main() -> int:
         rolling_requests = 0
         rolling_seconds = 0.0
         sequence = 1
-        next_window_start = 0.0
-        step = WINDOW_SECONDS - OVERLAP_SECONDS
+        next_window_start = FIRST_ATTEMPT_SECONDS
+        step = STEP_SECONDS
 
         with ws_connect(url, open_timeout=15, close_timeout=5) as socket:
             for chunk_index in range(int(duration / CHUNK_SECONDS) + 1):
@@ -152,14 +153,16 @@ def main() -> int:
                 except TimeoutError:
                     pass
 
-                # Rolling diarization windows over the same audio timeline.
+                # Rolling diarization snapshots (long-context lookback).
                 current_end = (chunk_index + 1) * CHUNK_SECONDS
-                while current_end - next_window_start >= WINDOW_SECONDS:
-                    window_start = next_window_start
-                    window_end = window_start + WINDOW_SECONDS
+                while next_window_start <= current_end:
+                    snapshot_end = next_window_start
+                    window_start = max(0.0, snapshot_end - LOOKBACK_SECONDS)
+                    window_end = snapshot_end
                     window_pcm = pcm[
                         int(window_start * 32_000) : int(window_end * 32_000)
                     ]
+                    stable_until = max(window_start, window_end - STEP_SECONDS)
                     response = client.post(
                         f"/api/v1/live-transcription/sessions/{live_session_id}/speaker-window",
                         files={"pcm": ("window.pcm", window_pcm, "application/octet-stream")},
@@ -167,18 +170,20 @@ def main() -> int:
                             "start_seconds": f"{window_start:.3f}",
                             "end_seconds": f"{window_end:.3f}",
                             "sequence": str(sequence),
+                            "stable_until": f"{stable_until:.3f}",
                         },
                     )
                     if response.status_code == 200:
                         body = response.json()
-                        # Speech end -> label visible (per assignment of this window).
                         responded_at = time.perf_counter() - started
                         for assignment in body.get("assignments", []):
+                            if assignment.get("provisional"):
+                                continue
                             label_delays.append(
                                 max(0.0, responded_at - float(assignment["end"]))
                             )
                         rolling_requests += 1
-                        rolling_seconds += WINDOW_SECONDS
+                        rolling_seconds += window_end - window_start
                         sequence += 1
                     else:
                         print("rolling_window_status:", response.status_code)
