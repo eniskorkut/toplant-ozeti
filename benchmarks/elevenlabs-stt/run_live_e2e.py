@@ -241,16 +241,18 @@ def main() -> int:
             f"/api/v1/live-transcription/sessions/{live_session_id}"
         ).json()
         speakers = session_state["speakers"]
+        confirmed_speakers = session_state.get("confirmed_speakers", [])
         print("live_speakers:", [s["canonical_speaker"] for s in speakers])
+        print("live_confirmed_speakers:", confirmed_speakers)
         print("live_windows_received:", session_state["windows_received"])
         print("live_label_switches:", session_state["label_switches"])
 
-        # Rename while the session is still live.
-        if speakers:
-            canonical = speakers[0]["canonical_speaker"]
+        # Rename while the session is still live (only confirmed speakers can be aliased).
+        target = confirmed_speakers[0] if confirmed_speakers else None
+        if target:
             rename = client.put(
                 f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/"
-                f"{canonical}/alias",
+                f"{target}/alias",
                 json={"display_name": args.alias},
             )
             print("live_alias_status:", rename.status_code)
@@ -258,9 +260,18 @@ def main() -> int:
                 "live_alias_visible:",
                 client.get(f"/api/v1/live-transcription/sessions/{live_session_id}")
                 .json()["aliases"]
-                .get(canonical)
+                .get(target)
                 == args.alias,
             )
+        elif speakers:
+            # Check rejection of unconfirmed speaker
+            unconfirmed = speakers[0]["canonical_speaker"]
+            rejected = client.put(
+                f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/"
+                f"{unconfirmed}/alias",
+                json={"display_name": args.alias},
+            )
+            print("unconfirmed_alias_status:", rejected.status_code)
 
         if args.skip_upload or args.skip_finalize:
             print("e2e_measure_only: true")

@@ -40,6 +40,13 @@ MAX_INTERVALS_PER_SPEAKER = 4_000
 # snapshots. One snapshot alone is never enough: that is what used to create
 # runaway Kişi 5/8/10 labels.
 MIN_CANDIDATE_SNAPSHOTS = 2
+# Conservative confirmation: an existing canonical speaker is only confirmed
+# when matched via temporal overlap with a decisive margin against competing
+# candidates. Weak disjoint merges or pause gaps remain provisional until
+# confirmed by subsequent overlapping snapshots or full-file finalization.
+CONFIRM_MARGIN_SECONDS = 1.0
+CONFIRM_MIN_AGREEING_SNAPSHOTS = 2
+MAX_HISTORY_ENTRIES = 600
 
 
 @dataclass
@@ -80,10 +87,15 @@ class LiveSession:
     # Known speaker count from the user selection (num_speakers = maximum expected).
     max_speakers: int | None = None
     speakers: dict[str, LiveSpeaker] = field(default_factory=dict)
+    # Labels with at least one conservatively confirmed span (alias-eligible).
+    confirmed_labels_set: set[str] = field(default_factory=set)
     candidates: list[CandidateSpeaker] = field(default_factory=list)
     # Full spans of the previous snapshot per canonical label (matching reference).
     last_snapshot: dict[str, list[Interval]] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
+    # Calibration history: every stable matched span with its confidence inputs
+    # (timestamps and scores only, never text). Used by the offline policy study.
+    assignment_history: list[dict] = field(default_factory=list)
 
     def speaker(self, label: str) -> LiveSpeaker:
         speaker = self.speakers.get(label)
@@ -93,7 +105,7 @@ class LiveSession:
         return speaker
 
     def confirmed_labels(self) -> list[str]:
-        return sorted(self.speakers, key=_label_sort_key)
+        return sorted(self.confirmed_labels_set, key=_label_sort_key)
 
     def public_state(self) -> dict:
         return {
@@ -243,14 +255,33 @@ class LiveSessionStore:
             speaker.committed.extend(stable)
             speaker.committed = speaker.committed[-MAX_INTERVALS_PER_SPEAKER:]
             record(label, spans)
+            for span in stable:
+                session.assignment_history.append(
+                    {
+                        "sequence": sequence,
+                        "label": label,
+                        "start": round(span[0], 3),
+                        "end": round(span[1], 3),
+                        "confidence": match.ratio,
+                        "margin": match.margin,
+                        "evidence": match.evidence,
+                        "provider_speakers": len(provider_intervals),
+                        "coexist": len(provider_intervals) > 1,
+                        "window_end": round(window[1], 3),
+                    }
+                )
+            session.assignment_history = session.assignment_history[-MAX_HISTORY_ENTRIES:]
             if stable:
+                confirmed = self._is_confirmed(session, label, stable, match=match)
+                if confirmed:
+                    session.confirmed_labels_set.add(label)
                 assignments.append(
                     {
                         "canonical_speaker": label,
                         "is_new": False,
                         "confidence": match.ratio,
                         "evidence": match.evidence,
-                        "provisional": False,
+                        "provisional": not confirmed,
                         "start": round(min(start for start, _ in stable), 3),
                         "end": round(max(end for _, end in stable), 3),
                         "speech_seconds": round(total_seconds(stable), 3),
@@ -286,7 +317,24 @@ class LiveSessionStore:
             promoted.append(label)
             new_speakers.append(label)
             consumed_candidates.append(index)
+            session.assignment_history.extend(
+                {
+                    "sequence": sequence,
+                    "label": label,
+                    "start": round(span[0], 3),
+                    "end": round(span[1], 3),
+                    "confidence": None,
+                    "margin": 0.0,
+                    "evidence": "promoted",
+                    "provider_speakers": len(provider_intervals),
+                    "coexist": len(provider_intervals) > 1,
+                    "window_end": round(window[1], 3),
+                }
+                for span in stable
+            )
+            session.assignment_history = session.assignment_history[-MAX_HISTORY_ENTRIES:]
             if stable:
+                session.confirmed_labels_set.add(label)
                 assignments.append(
                     {
                         "canonical_speaker": label,
@@ -312,9 +360,11 @@ class LiveSessionStore:
                         "speech_seconds": round(total_seconds(tail), 3),
                     }
                 )
-        for index in reversed(consumed_candidates):
-            session.candidates.pop(index)
-
+        session.candidates = [
+            candidate
+            for index, candidate in enumerate(session.candidates)
+            if index not in consumed_candidates
+        ]
         session.last_snapshot = last_snapshot
         session.windows_received += 1
         session.rolling_seconds += max(0.0, window[1] - window[0])
@@ -332,6 +382,31 @@ class LiveSessionStore:
             "confirmed_speakers": session.confirmed_labels(),
         }
 
+    def _is_confirmed(
+        self,
+        session: LiveSession,
+        label: str,
+        stable: list[Interval],
+        *,
+        match: SpeakerMatch | None = None,
+    ) -> bool:
+        """Conservative confirmation gate.
+
+        A live attribution is only confirmed when:
+        1. It is a newly promoted candidate with multi-snapshot evidence (seen
+           across >= 2 snapshots).
+        2. Or it is an overlap match with a clear margin (>= CONFIRM_MARGIN_SECONDS)
+           against competing canonical candidates, and not a weak disjoint merge or pause gap.
+
+        Everything else stays provisional ("Konuşmacı belirleniyor") until confirmed or finalized
+        by the authoritative full-file Scribe pass.
+        """
+        if match is None:
+            return True
+        if match.evidence in ("merged-fragment", "gap"):
+            return False
+        return match.margin >= CONFIRM_MARGIN_SECONDS
+
     def _may_promote(self, session: LiveSession) -> bool:
         if session.max_speakers is None:
             return True
@@ -344,6 +419,10 @@ class LiveSessionStore:
         if not spans:
             return
         for candidate in session.candidates:
+            # Evidence must come from an EARLIER snapshot: two clusters inside the
+            # same snapshot are different voices, not one candidate.
+            if candidate.last_sequence == sequence:
+                continue
             if _clusters_are_continuous(candidate.intervals, spans):
                 candidate.intervals.extend(spans)
                 candidate.intervals = candidate.intervals[-MAX_INTERVALS_PER_SPEAKER:]

@@ -43,6 +43,8 @@ class SpeakerMatch:
     overlap_seconds: float
     ratio: float
     evidence: str = "overlap"
+    # Best-vs-second-best overlap margin in seconds (0 for non-overlap evidence).
+    margin: float = 0.0
 
 
 def interval_gap(left: Interval, right: Interval) -> float:
@@ -342,6 +344,22 @@ def match_speakers(
             else:
                 pending.remove(provider_name)
 
+    # Margin per provider speaker: best accepted score minus the runner-up, used
+    # by conservative confirmation policies (never for matching itself).
+    margin_by_provider: dict[str, float] = {}
+    for provider_name in provider_intervals:
+        provider_scores = sorted(
+            (
+                score
+                for (canonical_name, other), score in scores.items()
+                if other == provider_name
+            ),
+            reverse=True,
+        )
+        margin_by_provider[provider_name] = round(
+            provider_scores[0] - provider_scores[1], 3
+        ) if len(provider_scores) > 1 else round(provider_scores[0], 3) if provider_scores else 0.0
+
     matches: dict[str, SpeakerMatch] = {}
     for provider_name, canonical_name in matching.items():
         score = scores.get((canonical_name, provider_name), 0.0)
@@ -351,6 +369,7 @@ def match_speakers(
             overlap_seconds=round(score, 3),
             ratio=round(score / provider_totals[provider_name], 3),
             evidence=evidence[provider_name],
+            margin=margin_by_provider.get(provider_name, 0.0),
         )
     unmatched = [
         name

@@ -302,10 +302,11 @@ async def set_live_alias(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
-    if label not in session.speakers:
+    if label not in session.confirmed_labels():
+        # Provisional speakers cannot be renamed yet (Phase 8 alias safety).
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Canonical speaker is not present in this live session",
+            detail="Canonical speaker is not confirmed in this live session",
         )
     session.aliases[label] = display_name
     return AliasOut(canonical_speaker=label, display_name=display_name)

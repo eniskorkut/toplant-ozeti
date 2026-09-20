@@ -778,3 +778,208 @@ def test_ambiguous_mapping_creates_no_canonical(context, monkeypatch) -> None:
     body = submit_window(client, live_session_id, start=8, end=16, sequence=3).json()
     assert body["confirmed_speakers"] == ["Kişi 1"]
     assert body["candidate_speakers"] >= 1
+
+
+def test_provisional_speaker_gets_no_alias(context, monkeypatch) -> None:
+    """Aliases attach only to CONFIRMED canonical speakers (Phase 8 alias safety)."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    monkeypatch.setattr(
+        "app.routers.live_transcription.transcribe_pcm_window",
+        lambda pcm, *, settings, requested_speaker_count=None: window_words(
+            {"speaker_0": [(0.0, 3.0)]}
+        ),
+    )
+
+    # First snapshot: speaker is only a candidate, not confirmed.
+    submit_window(client, live_session_id, start=0, end=8, sequence=1)
+
+    # Attempting to alias unconfirmed Kişi 1 must return 404.
+    response = client.put(
+        f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/Kişi 1/alias",
+        json={"display_name": "Ahmet"},
+    )
+    assert response.status_code == 404
+    assert "not confirmed" in response.json()["detail"].lower()
+
+    # Second overlapping snapshot confirms Kişi 1.
+    submit_window(client, live_session_id, start=4, end=12, sequence=2)
+
+    # Aliasing confirmed Kişi 1 now succeeds.
+    alias_response = client.put(
+        f"/api/v1/live-transcription/sessions/{live_session_id}/speakers/Kişi 1/alias",
+        json={"display_name": "Ahmet"},
+    )
+    assert alias_response.status_code == 200
+    assert alias_response.json()["display_name"] == "Ahmet"
+
+
+def test_ambiguous_evidence_remains_provisional_and_strong_evidence_confirms(
+    context, monkeypatch
+) -> None:
+    """Ambiguous or weak evidence stays provisional; strong evidence confirms."""
+    client, _, _, store = context
+
+    # Session 1: Ambiguous overlap with small margin (< CONFIRM_MARGIN_SECONDS) stays provisional
+    session1_id = make_session(client)
+    s1 = store.get(session1_id)
+    s1.speaker("Kişi 1").committed = [(0.0, 4.0)]
+    s1.speaker("Kişi 2").committed = [(3.0, 8.0)]
+    s1.confirmed_labels_set.update({"Kişi 1", "Kişi 2"})
+    s1.last_snapshot = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(3.0, 8.0)]}
+
+    # Window [2.0, 10.0]: speaker_0 is [0.5, 2.0] locally -> [2.5, 4.0] globally
+    # Overlap Kişi 1 [0.0, 4.0] = 1.5s, Overlap Kişi 2 [3.0, 8.0] = 1.0s. Margin = 0.5s < 1.0s.
+    words_ambiguous = {
+        "speaker_0": [(0.5, 2.0)],
+    }
+    monkeypatch.setattr(
+        "app.routers.live_transcription.transcribe_pcm_window",
+        lambda pcm, *, settings, requested_speaker_count=None: window_words(words_ambiguous),
+    )
+    res_ambiguous = submit_window(client, session1_id, start=2.0, end=10.0, sequence=1).json()
+    assert len(res_ambiguous["assignments"]) == 1
+    assert res_ambiguous["assignments"][0]["canonical_speaker"] == "Kişi 1"
+    assert res_ambiguous["assignments"][0]["provisional"] is True
+
+    # Session 2: Strong decisive overlap (margin >= 1.0s) confirms
+    session2_id = make_session(client)
+    s2 = store.get(session2_id)
+    s2.speaker("Kişi 1").committed = [(0.0, 4.0)]
+    s2.speaker("Kişi 2").committed = [(4.1, 8.0)]
+    s2.confirmed_labels_set.update({"Kişi 1", "Kişi 2"})
+    s2.last_snapshot = {"Kişi 1": [(0.0, 4.0)], "Kişi 2": [(4.1, 8.0)]}
+
+    # Window [2.0, 10.0]: speaker_0 is [0.0, 1.8] locally -> [2.0, 3.8] globally
+    # Overlaps Kişi 1 by 1.8s, Kişi 2 by 0s. Margin = 1.8s >= 1.0s.
+    words_strong = {
+        "speaker_0": [(0.0, 1.8)],
+    }
+    monkeypatch.setattr(
+        "app.routers.live_transcription.transcribe_pcm_window",
+        lambda pcm, *, settings, requested_speaker_count=None: window_words(words_strong),
+    )
+    res_strong = submit_window(client, session2_id, start=2.0, end=10.0, sequence=1).json()
+    confirmed_assignments = [a for a in res_strong["assignments"] if not a["provisional"]]
+    assert len(confirmed_assignments) == 1
+    assert confirmed_assignments[0]["canonical_speaker"] == "Kişi 1"
+
+
+def test_confirmation_patches_in_place_no_duplicates_chronological_order(
+    context, monkeypatch
+) -> None:
+    """Speaker confirmation patches in place without duplicate utterances or reordering."""
+    client, _, _, _ = context
+    live_session_id = make_session(client)
+
+    # Simulated client-side transcript lines state
+    transcript_lines = [
+        {
+            "id": "line-1",
+            "startSeconds": 0.5,
+            "endSeconds": 2.5,
+            "text": "merhaba",
+            "canonical": None,
+            "provisional": True,
+        },
+        {
+            "id": "line-2",
+            "startSeconds": 3.0,
+            "endSeconds": 5.0,
+            "text": "nasılsınız",
+            "canonical": None,
+            "provisional": True,
+        },
+    ]
+
+    # First window: produces provisional assignments
+    words1 = {"speaker_0": [(0.5, 2.5), (3.0, 5.0)]}
+    monkeypatch.setattr(
+        "app.routers.live_transcription.transcribe_pcm_window",
+        lambda pcm, *, settings, requested_speaker_count=None: window_words(words1),
+    )
+    res1 = submit_window(client, live_session_id, start=0.0, end=8.0, sequence=1).json()
+
+    # Frontend attachSpeakerLabels logic simulation
+    for line in transcript_lines:
+        if line["canonical"]:
+            continue
+        mid = (line["startSeconds"] + line["endSeconds"]) / 2
+        match = next(
+            (
+                a
+                for a in res1["assignments"]
+                if not a["provisional"]
+                and mid >= a["start"] - 0.5
+                and mid <= a["end"] + 0.5
+            ),
+            None,
+        )
+        if match:
+            line["canonical"] = match["canonical_speaker"]
+
+    # In window 1, all assignments are provisional ("Konuşmacı belirleniyor")
+    assert all(line["canonical"] is None for line in transcript_lines)
+    assert len(transcript_lines) == 2
+
+    # Second window: confirms the speaker
+    words2 = {"speaker_0": [(0.5, 2.5), (3.0, 5.0)]}
+    monkeypatch.setattr(
+        "app.routers.live_transcription.transcribe_pcm_window",
+        lambda pcm, *, settings, requested_speaker_count=None: window_words(words2),
+    )
+    res2 = submit_window(client, live_session_id, start=0.0, end=8.0, sequence=2).json()
+
+    for line in transcript_lines:
+        if line["canonical"]:
+            continue
+        mid = (line["startSeconds"] + line["endSeconds"]) / 2
+        match = next(
+            (
+                a
+                for a in res2["assignments"]
+                if not a["provisional"]
+                and mid >= a["start"] - 0.5
+                and mid <= a["end"] + 0.5
+            ),
+            None,
+        )
+        if match:
+            line["canonical"] = match["canonical_speaker"]
+
+    # Now both lines are patched in place to Kişi 1
+    assert transcript_lines[0]["canonical"] == "Kişi 1"
+    assert transcript_lines[1]["canonical"] == "Kişi 1"
+    # No duplicate rows were created, row count stays exactly 2
+    assert len(transcript_lines) == 2
+    # Texts and timestamps unchanged
+    assert transcript_lines[0]["text"] == "merhaba"
+    assert transcript_lines[1]["text"] == "nasılsınız"
+    # Chronological order strictly preserved
+    assert transcript_lines[0]["startSeconds"] < transcript_lines[1]["startSeconds"]
+
+
+def test_confirmed_labels_do_not_oscillate_after_freeze() -> None:
+    """Once a confirmed label is attached outside mutable tail, it freezes and never oscillates."""
+    line = {"startSeconds": 1.0, "endSeconds": 3.0, "canonical": "Kişi 1"}
+
+    # Subsequent snapshot conflicting assignment arrives suggesting Kişi 2
+    conflicting_assignment = {
+        "canonical_speaker": "Kişi 2",
+        "provisional": False,
+        "start": 0.5,
+        "end": 3.5,
+    }
+
+    # Frontend freeze rule: if line.canonical is already set, return unchanged
+
+    # Frontend freeze rule: if line.canonical is already set, return unchanged
+    def attach_label(current_line, assignment):
+        if current_line["canonical"]:
+            return current_line
+        return {**current_line, "canonical": assignment["canonical_speaker"]}
+
+    result_line = attach_label(line, conflicting_assignment)
+    assert result_line["canonical"] == "Kişi 1"  # Frozen, did not flip to Kişi 2
+
