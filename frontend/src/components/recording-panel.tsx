@@ -186,6 +186,10 @@ export function RecordingPanel() {
   const pcmRef = useRef<PcmCapture | null>(null);
   const trackerRef = useRef<RollingSpeakerTracker | null>(null);
   const lastRollingResultRef = useRef<SpeakerWindowResult | null>(null);
+  // Monotonic recording generation: every async callback must still belong to the
+  // CURRENT recording before it may mutate state (stale Meeting A results must
+  // never label Meeting B).
+  const liveGenerationRef = useRef(0);
   const captureStartedAtRef = useRef<number | null>(null);
   const firstPcmAtRef = useRef<number | null>(null);
   const wsConnectedAtRef = useRef<number | null>(null);
@@ -485,10 +489,13 @@ export function RecordingPanel() {
   );
 
   const startLivePipeline = useCallback(
-    async (recorder: MeetingRecorder) => {
+    async (recorder: MeetingRecorder, generation: number) => {
+      const isCurrent = () => liveGenerationRef.current === generation;
       const stream = recorder.audioStream;
       if (!stream) {
-        setLiveWarning("Canlı transkript başlatılamadı — kayıt devam ediyor.");
+        if (isCurrent()) {
+          setLiveWarning("Canlı transkript başlatılamadı — kayıt devam ediyor.");
+        }
         return;
       }
       let createdSessionId: string | null = null;
@@ -497,6 +504,11 @@ export function RecordingPanel() {
           liveSpeakerChoice === "auto" ? null : Number(liveSpeakerChoice);
         const session = await createLiveSession(requestedCount);
         createdSessionId = session.live_session_id;
+        if (!isCurrent()) {
+          // The recording already moved on: release the orphaned live session.
+          void deleteLiveSession(createdSessionId).catch(() => undefined);
+          return;
+        }
         setLiveSessionId(createdSessionId);
 
         const tracker = new RollingSpeakerTracker({
@@ -504,8 +516,12 @@ export function RecordingPanel() {
           speakerCount:
             liveSpeakerChoice === "auto" ? null : Number(liveSpeakerChoice),
           send: (request) => sendSpeakerWindow(createdSessionId as string, request),
-          onResult: (result) => attachSpeakerLabels(result),
+          onResult: (result) => {
+            if (!isCurrent()) return;
+            attachSpeakerLabels(result);
+          },
           onFailure: () => {
+            if (!isCurrent()) return;
             setLiveWarning(
               "Konuşmacı etiketleri şu an alınamıyor; kayıt ve canlı metin devam ediyor.",
             );
@@ -514,9 +530,16 @@ export function RecordingPanel() {
         trackerRef.current = tracker;
 
         const scribe = new ScribeRealtimeClient({
-          onPartial: handlePartial,
-          onCommitted: handleCommitted,
+          onPartial: (text) => {
+            if (!isCurrent()) return;
+            handlePartial(text);
+          },
+          onCommitted: (text, words, enrichment) => {
+            if (!isCurrent()) return;
+            handleCommitted(text, words, enrichment);
+          },
           onStatus: (next) => {
+            if (!isCurrent()) return;
             setRealtimeStatus(next);
             if (next === "connected") {
               setLiveWarning(null);
@@ -527,6 +550,7 @@ export function RecordingPanel() {
             }
           },
           onTimeline: (event, atMs) => {
+            if (!isCurrent()) return;
             if (event === "connected" && wsConnectedAtRef.current === null) {
               wsConnectedAtRef.current = atMs;
             }
@@ -539,6 +563,7 @@ export function RecordingPanel() {
 
         const capture = new PcmCapture(stream, {
           onChunk: (pcm, startSeconds) => {
+            if (!isCurrent()) return;
             if (firstPcmAtRef.current === null) {
               firstPcmAtRef.current = performance.now();
             }
@@ -546,12 +571,14 @@ export function RecordingPanel() {
             trackerRef.current?.push(new Int16Array(pcm), startSeconds);
           },
           onError: () => {
+            if (!isCurrent()) return;
             setLiveWarning("Canlı ses işleme hatası — kayıt devam ediyor.");
           },
         });
         pcmRef.current = capture;
         captureStartedAtRef.current = performance.now();
         await capture.start();
+        if (!isCurrent()) return;
         // Every connection attempt (including reconnects) mints a fresh
         // single-use token; consumed tokens are never reused.
         scribe.open(async () => (await getRealtimeToken()).token);
@@ -559,6 +586,7 @@ export function RecordingPanel() {
         if (createdSessionId) {
           void deleteLiveSession(createdSessionId).catch(() => undefined);
         }
+        if (!isCurrent()) return;
         setLiveSessionId(null);
         setLiveWarning("Canlı transkript başlatılamadı — kayıt devam ediyor.");
       }
@@ -567,6 +595,9 @@ export function RecordingPanel() {
   );
 
   const stopLivePipeline = useCallback(() => {
+    // Invalidate this recording's callbacks: a late rolling/realtime result must
+    // never mutate the next recording's state.
+    liveGenerationRef.current += 1;
     const tracker = trackerRef.current;
     const captureStats = pcmRef.current?.stats ?? null;
     if (captureStats) pcmStatsRef.current = captureStats;
@@ -610,6 +641,14 @@ export function RecordingPanel() {
   // --- recording lifecycle -------------------------------------------------
 
   const handleStart = useCallback(async () => {
+    liveGenerationRef.current += 1;
+    // Stop any previous live pipeline safely before a new recording begins.
+    scribeRef.current?.close();
+    scribeRef.current = null;
+    pcmRef.current?.stop();
+    pcmRef.current = null;
+    trackerRef.current?.stop();
+    trackerRef.current = null;
     setError(null);
     setProcessingError(null);
     setRecording(null);
@@ -629,6 +668,10 @@ export function RecordingPanel() {
     awaitingTimestampsRef.current = false;
     setAliases({});
     setLiveSessionId(null);
+    lastRollingResultRef.current = null;
+    setRenameSpeaker(null);
+    setRenameError(null);
+    setRenameBusy(false);
     captureStartedAtRef.current = null;
     firstPcmAtRef.current = null;
     wsConnectedAtRef.current = null;
@@ -650,7 +693,7 @@ export function RecordingPanel() {
       setStatus("recording");
       if (wantsLive) {
         // Live failures never stop the recording.
-        await startLivePipeline(recorder);
+        await startLivePipeline(recorder, liveGenerationRef.current);
       }
     } catch (startError) {
       recorder.dispose();
@@ -727,12 +770,14 @@ export function RecordingPanel() {
       const canonical = renameSpeaker;
       setRenameBusy(true);
       setRenameError(null);
+      const generation = liveGenerationRef.current;
       try {
         if (status === "recording" && liveSessionId) {
           await setLiveSpeakerAlias(liveSessionId, canonical, displayName);
         } else if (meetingId) {
           await setMeetingSpeakerAlias(meetingId, canonical, displayName);
         }
+        if (liveGenerationRef.current !== generation) return;
         setAliases((previous) => applyAlias(previous, canonical, displayName));
         setRenameSpeaker(null);
       } catch (renameFailure) {

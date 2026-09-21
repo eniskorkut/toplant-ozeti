@@ -103,6 +103,9 @@ export class RollingSpeakerTracker {
         stableUntil,
       })
       .then((result) => {
+        // stop() is final: a late response from a previous recording must never
+        // mutate state, advance the sequence or label the next recording.
+        if (this.stopped) return;
         this.failureCount = 0;
         this.sequence += 1;
         this.uploadedSecondsTotal += uploaded;
@@ -110,6 +113,7 @@ export class RollingSpeakerTracker {
         this.options.onResult(result);
       })
       .catch((error) => {
+        if (this.stopped) return;
         this.failureCount += 1;
         this.options.onFailure?.(error);
         if (this.failureCount >= MAX_WINDOW_RETRIES) {
@@ -126,6 +130,7 @@ export class RollingSpeakerTracker {
       })
       .finally(() => {
         this.inFlight = false;
+        if (this.stopped) return;
         this.maybeSend();
       });
   }

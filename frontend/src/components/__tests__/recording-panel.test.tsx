@@ -999,3 +999,167 @@ describe("RecordingPanel live text lifecycle", () => {
     expect(createLiveSession).toHaveBeenCalledWith(2);
   });
 });
+
+describe("RecordingPanel session isolation", () => {
+  beforeEach(() => {
+    getTranscriptionProviders.mockResolvedValue(capabilities(true));
+  });
+
+  async function startSession() {
+    render(<RecordingPanel />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await selectLiveProvider();
+    await startLiveRecording();
+  }
+
+  async function stopSession() {
+    // Force the upload to fail so the panel returns to idle (a new recording
+    // can only start from idle).
+    uploadRecording.mockRejectedValueOnce(new Error("upload failed"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Durdur" }));
+    });
+  }
+
+  it("a late rolling result from the previous recording never labels the next one", async () => {
+    let resolveMeetingA: ((value: unknown) => void) | null = null;
+    sendSpeakerWindow.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveMeetingA = resolve;
+        }),
+    );
+    // Meeting B's own requests resolve with a confirmed Kişi 1 result.
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+
+    await startSession();
+    // Meeting A gets text and triggers an in-flight speaker request.
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("A cümlesi", [{ text: "A", start: 1, end: 2 }], false);
+      emitChunks(8);
+      await Promise.resolve();
+    });
+    await stopSession();
+
+    // Meeting B starts; before its own result arrives, Meeting A's request resolves.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+    });
+    expect(scribeCallbacks).toHaveLength(2);
+    await act(async () => {
+      scribeCallbacks[1].onCommitted("B cümlesi", [{ text: "B", start: 1, end: 2 }], false);
+      resolveMeetingA?.({
+        sequence: 1,
+        window: [0, 8],
+        assignments: [
+          {
+            canonical_speaker: "Kişi 4",
+            is_new: true,
+            confidence: null,
+            evidence: "promoted",
+            provisional: false,
+            start: 0,
+            end: 8,
+            speech_seconds: 4,
+          },
+        ],
+        new_speakers: ["Kişi 4"],
+        promoted_speakers: ["Kişi 4"],
+        ambiguous_speakers: 0,
+        candidate_speakers: 0,
+        confirmed_speakers: ["Kişi 4"],
+        provider_speakers: 2,
+        latency_seconds: 0.4,
+        rolling_seconds: 8,
+        label_switches: 0,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Meeting A's stale Kişi 4 must not appear in Meeting B.
+    expect(screen.queryByText("Kişi 4")).toBeNull();
+    expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+    expect(screen.getByText("B cümlesi")).toBeTruthy();
+
+    // Meeting B's own result then labels B with Kişi 1.
+    await act(async () => {
+      emitChunks(8);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Kişi 1")).toBeTruthy();
+    expect(screen.queryByText("Kişi 4")).toBeNull();
+  });
+
+  it("stale lastRollingResultRef cannot label a new recording's committed line", async () => {
+    // Meeting A resolves successfully with Kişi 3 BEFORE stopping.
+    sendSpeakerWindow.mockResolvedValueOnce(
+      rollingResult({
+        assignments: [
+          {
+            canonical_speaker: "Kişi 3",
+            is_new: true,
+            confidence: null,
+            evidence: "promoted",
+            provisional: false,
+            start: 0,
+            end: 8,
+            speech_seconds: 4,
+          },
+        ],
+        promoted_speakers: ["Kişi 3"],
+        confirmed_speakers: ["Kişi 3"],
+      }),
+    );
+
+    await startSession();
+    await act(async () => {
+      scribeCallbacks[0].onCommitted("A cümlesi", [{ text: "A", start: 1, end: 2 }], false);
+      emitChunks(8);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Kişi 3")).toBeTruthy();
+    await stopSession();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+    });
+    await act(async () => {
+      scribeCallbacks[1].onCommitted("B cümlesi", [{ text: "B", start: 1, end: 2 }], false);
+    });
+
+    // The stored result from Meeting A must be gone: B stays pending.
+    expect(screen.queryByText("Kişi 3")).toBeNull();
+    expect(screen.getByText("Konuşmacı belirleniyor")).toBeTruthy();
+  });
+
+  it("three consecutive recordings each start their own canonical namespace", async () => {
+    sendSpeakerWindow.mockResolvedValue(rollingResult());
+    for (let round = 1; round <= 3; round += 1) {
+      if (round === 1) {
+        await startSession();
+      } else {
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Kaydı Başlat" }));
+        });
+      }
+      expect(createLiveSession).toHaveBeenLastCalledWith(null);
+      await act(async () => {
+        scribeCallbacks[round - 1].onCommitted(`cümle ${round}`, [
+          { text: "x", start: 1, end: 2 },
+        ], false);
+        emitChunks(8);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Kişi 1")).toBeTruthy();
+      expect(screen.queryByText("Kişi 2")).toBeNull();
+      await stopSession();
+    }
+    expect(createLiveSession).toHaveBeenCalledTimes(3);
+  });
+});

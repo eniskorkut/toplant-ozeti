@@ -381,6 +381,71 @@ describe("RollingSpeakerTracker (long context)", () => {
     }
   });
 
+  it("ignores a late response that resolves after stop()", async () => {
+    let resolveSend!: (value: import("@/lib/api").SpeakerWindowResult) => void;
+    const onResult = vi.fn();
+    const rolling = new RollingSpeakerTracker({
+      liveSessionId: "live-1",
+      speakerCount: null,
+      send: () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+      onResult,
+    });
+
+    for (let second = 0; second < 8; second += 1) rolling.push(pcm(1), second);
+    await Promise.resolve();
+    expect(rolling.requestCount).toBe(0); // in flight, not counted yet
+
+    rolling.stop();
+    resolveSend({
+      sequence: 1,
+      window: [0, 8],
+      assignments: [],
+      new_speakers: [],
+      promoted_speakers: [],
+      ambiguous_speakers: 0,
+      candidate_speakers: 0,
+      confirmed_speakers: [],
+      provider_speakers: 1,
+      latency_seconds: 0.4,
+      rolling_seconds: 8,
+      label_switches: 0,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onResult).not.toHaveBeenCalled();
+    expect(rolling.requestCount).toBe(0);
+    expect(rolling.uploadedSeconds).toBe(0);
+  });
+
+  it("ignores a late failure that rejects after stop()", async () => {
+    let rejectSend!: (error: Error) => void;
+    const onFailure = vi.fn();
+    const rolling = new RollingSpeakerTracker({
+      liveSessionId: "live-1",
+      speakerCount: null,
+      send: () =>
+        new Promise((_resolve, reject) => {
+          rejectSend = reject;
+        }),
+      onResult: () => undefined,
+      onFailure,
+    });
+
+    for (let second = 0; second < 8; second += 1) rolling.push(pcm(1), second);
+    await Promise.resolve();
+    rolling.stop();
+    rejectSend(new Error("late failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(rolling.requestCount).toBe(0);
+  });
+
   it("stops cleanly and keeps memory bounded", () => {
     const rolling = tracker(async (request) => result(request));
     for (let second = 0; second < 40; second += 1) rolling.push(pcm(1), second);
