@@ -498,6 +498,29 @@ class LiveSessionStore:
                 stale.add(label)
         return stale
 
+    def is_identity_ambiguity_active(
+        self,
+        session: LiveSession,
+        window: Interval,
+        *,
+        matches: dict[str, SpeakerMatch] | None = None,
+        provider_intervals: dict[str, list[Interval]] | None = None,
+    ) -> bool:
+        """True when identity continuity is broken for some confirmed speaker.
+
+        When a confirmed speaker has been silent longer than the temporal horizon,
+        an unmatched request-local provider speaker can no longer be distinguished
+        (from local temporal evidence alone) between a returning historical speaker
+        and a genuinely new participant. Canonical creation is then frozen and the
+        unmatched speech stays pending ("Konuşmacı belirleniyor") until the
+        authoritative full-file Scribe v2 pass.
+        """
+        return bool(
+            self._stale_confirmed_speakers(
+                session, window, matches=matches, provider_intervals=provider_intervals
+            )
+        )
+
     def _has_silent_known_speaker(
         self,
         session: LiveSession,
@@ -507,38 +530,9 @@ class LiveSessionStore:
         provider_intervals: dict[str, list[Interval]] | None = None,
     ) -> bool:
         """True if any confirmed speaker has been silent for longer than the lookback horizon."""
-        return bool(
-            self._stale_confirmed_speakers(
-                session, window, matches=matches, provider_intervals=provider_intervals
-            )
-        )
-
-    def _is_candidate_ambiguous_with_stale_speaker(
-        self,
-        session: LiveSession,
-        candidate: CandidateSpeaker,
-        window: Interval,
-        *,
-        matches: dict[str, SpeakerMatch] | None = None,
-        provider_intervals: dict[str, list[Interval]] | None = None,
-    ) -> bool:
-        """Determine whether THIS candidate could plausibly be a returning stale speaker.
-
-        A candidate should remain pending when its identity cannot be distinguished from
-        one or more stale known speakers using available temporal evidence.
-        When stale confirmed speakers exist, an isolated candidate appearing alone cannot
-        be distinguished from a returning stale speaker. Positive distinct-speaker evidence
-        (coexisting simultaneously with an active confirmed canonical speaker in snapshot)
-        establishes that the candidate represents a distinct voice.
-        """
-        stale = self._stale_confirmed_speakers(
+        return self.is_identity_ambiguity_active(
             session, window, matches=matches, provider_intervals=provider_intervals
         )
-        if not stale:
-            return False
-
-        # Positive distinct-speaker evidence: candidate coexisted with an active confirmed speaker.
-        return not candidate.coexisting_confirmed_speakers
 
     def _may_promote(
         self,
@@ -551,14 +545,11 @@ class LiveSessionStore:
     ) -> bool:
         if session.max_speakers is not None and len(session.speakers) >= session.max_speakers:
             return False
-        if window is None or candidate is None:
-            return True
-        return not self._is_candidate_ambiguous_with_stale_speaker(
-            session,
-            candidate,
-            window,
-            matches=matches,
-            provider_intervals=provider_intervals,
+        return not (
+            window is not None
+            and self.is_identity_ambiguity_active(
+                session, window, matches=matches, provider_intervals=provider_intervals
+            )
         )
 
     def _register_candidate(

@@ -65,7 +65,7 @@ export function LiveTranscript({
             Canlı transkript
           </h3>
           <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-            · Konuşmacı etiketleri kayıt sırasında tahminidir.
+            · Konuşmacı etiketleri kayıt sırasında tahminidir ve kayıt tamamlandığında doğrulanır.
           </span>
         </div>
         <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
