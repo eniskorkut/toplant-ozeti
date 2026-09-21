@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.services.analysis_prompt import (
     SYSTEM_PROMPT,
+    alias_mapping,
     build_repair_prompt,
     build_user_prompt,
 )
@@ -157,6 +158,8 @@ async def process_analysis(
                     + "; ".join(errors[:5])
                 )
 
+        payload = apply_aliases_to_prose(payload, alias_mapping(turns))
+
         stored = await session.get(MeetingAnalysis, analysis_id)
         if stored is None:
             raise LlmConfigurationError("analysis row disappeared")
@@ -199,6 +202,56 @@ async def process_analysis(
             failed.repair_attempts = repair_attempts
             await session.commit()
         logger.warning("analysis %s failed: %s", analysis_id, _safe_error_message(exc))
+
+
+_ALIAS_TOKEN_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def apply_aliases_to_prose(payload: AnalysisPayload, aliases: dict[str, str]) -> AnalysisPayload:
+    """Guarantee alias usage in human-readable prose (owner stays canonical).
+
+    Prompting alone is not reliable on every provider/model, so canonical labels
+    are deterministically replaced with the meeting's display aliases in prose
+    fields. Owners are never touched: semantic validation stays canonical.
+    """
+    if not aliases:
+        return payload
+
+    def replace(text: str) -> str:
+        for canonical, alias in aliases.items():
+            pattern = _ALIAS_TOKEN_RE_CACHE.get(canonical)
+            if pattern is None:
+                pattern = re.compile(rf"(?<![\w]){re.escape(canonical)}(?![\w])")
+                _ALIAS_TOKEN_RE_CACHE[canonical] = pattern
+            text = pattern.sub(alias, text)
+        return text
+
+    return payload.model_copy(
+        update={
+            "summary": replace(payload.summary),
+            "key_points": [
+                point.model_copy(update={"text": replace(point.text)})
+                for point in payload.key_points
+            ],
+            "decisions": [
+                decision.model_copy(update={"text": replace(decision.text)})
+                for decision in payload.decisions
+            ],
+            "action_items": [
+                item.model_copy(update={"task": replace(item.task)})
+                for item in payload.action_items
+            ],
+            "important_moments": [
+                moment.model_copy(
+                    update={
+                        "title": replace(moment.title),
+                        "description": replace(moment.description),
+                    }
+                )
+                for moment in payload.important_moments
+            ],
+        }
+    )
 
 
 def _safe_error_message(exc: Exception) -> str:

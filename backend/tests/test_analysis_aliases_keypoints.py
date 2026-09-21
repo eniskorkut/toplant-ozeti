@@ -369,3 +369,109 @@ def test_additive_migration_is_idempotent(tmp_path: Path) -> None:
     finally:
         asyncio.run(database.dispose())
     assert "key_points_json" in columns
+
+
+# --- deterministic prose substitution ----------------------------------------
+
+
+def test_user_prompt_contains_alias_mapping_preamble() -> None:
+    from app.services.analysis_prompt import build_user_prompt
+
+    turns = [
+        TranscriptTurnView(0, "Kişi 1", 0.0, "Merhaba", alias="Ahmet"),
+        TranscriptTurnView(1, "Kişi 2", 1.0, "Selam"),
+    ]
+    prompt = build_user_prompt(turns)
+    assert "Kişi 1 = Ahmet" in prompt
+    assert "action_items.owner" in prompt
+
+
+def test_apply_aliases_to_prose_replaces_prose_but_not_owner() -> None:
+    from app.services.analysis_pipeline import apply_aliases_to_prose
+
+    payload, errors = validate_payload(
+        json.dumps(PAYLOAD),
+        [
+            TranscriptTurnView(0, "Kişi 1", 0.0, "x"),
+            TranscriptTurnView(1, "Kişi 2", 1.0, "y"),
+        ],
+    )
+    assert payload is not None and not errors
+
+    updated = apply_aliases_to_prose(payload, {"Kişi 1": "Ahmet", "Kişi 2": "Mehmet"})
+
+    assert "Ahmet" in updated.summary and "Mehmet" in updated.summary
+    assert "Kişi 1" not in updated.summary
+    assert "Ahmet" in updated.key_points[0].text or "Kişi 1" not in updated.key_points[0].text
+    assert updated.action_items[0].owner == "Kişi 2"  # canonical, untouched
+    assert updated.action_items[0].task == "Testleri tamamla"  # no label -> unchanged
+
+    # A task that mentions the canonical label in prose IS substituted.
+    inline, _ = validate_payload(
+        json.dumps(
+            {
+                "summary": "x",
+                "key_points": [],
+                "topics": [],
+                "decisions": [],
+                "action_items": [
+                    {
+                        "task": "Kişi 2 testleri tamamlayacak",
+                        "owner": "Kişi 2",
+                        "due_date_text": None,
+                        "source_turn_ordinals": [1],
+                    }
+                ],
+                "important_moments": [],
+            }
+        ),
+        [
+            TranscriptTurnView(0, "Kişi 1", 0.0, "x"),
+            TranscriptTurnView(1, "Kişi 2", 1.0, "y"),
+        ],
+    )
+    assert inline is not None
+    substituted = apply_aliases_to_prose(inline, {"Kişi 2": "Mehmet"})
+    assert substituted.action_items[0].task == "Mehmet testleri tamamlayacak"
+    assert substituted.action_items[0].owner == "Kişi 2"
+
+
+def test_alias_substitution_respects_token_boundaries() -> None:
+    from app.services.analysis_pipeline import apply_aliases_to_prose
+
+    payload, _ = validate_payload(
+        json.dumps(
+            {
+                "summary": "Kişi 10 ve Kişi 1 konuştu.",
+                "key_points": [],
+                "topics": [],
+                "decisions": [],
+                "action_items": [],
+                "important_moments": [],
+            }
+        ),
+        [TranscriptTurnView(0, "Kişi 1", 0.0, "x")],
+    )
+    assert payload is not None
+    updated = apply_aliases_to_prose(payload, {"Kişi 1": "Ahmet"})
+    assert updated.summary == "Kişi 10 ve Ahmet konuştu."
+
+
+def test_alias_substitution_is_noop_without_aliases() -> None:
+    from app.services.analysis_pipeline import apply_aliases_to_prose
+
+    payload, _ = validate_payload(
+        json.dumps(
+            {
+                "summary": "Kişi 1 konuştu.",
+                "key_points": [],
+                "topics": [],
+                "decisions": [],
+                "action_items": [],
+                "important_moments": [],
+            }
+        ),
+        [TranscriptTurnView(0, "Kişi 1", 0.0, "x")],
+    )
+    assert payload is not None
+    assert apply_aliases_to_prose(payload, {}) is payload

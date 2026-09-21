@@ -107,8 +107,31 @@ def serialize_transcript(turns: Iterable[TranscriptTurnView]) -> str:
     )
 
 
+def alias_mapping(turns: Iterable[TranscriptTurnView]) -> dict[str, str]:
+    """Canonical label -> display alias for this meeting (first alias wins)."""
+    mapping: dict[str, str] = {}
+    for turn in turns:
+        if turn.alias and turn.speaker not in mapping:
+            mapping[turn.speaker] = turn.alias
+    return mapping
+
+
 def build_user_prompt(turns: Iterable[TranscriptTurnView]) -> str:
-    return "Transcript:\n" + serialize_transcript(turns)
+    turn_list = list(turns)
+    mapping = alias_mapping(turn_list)
+    preamble = ""
+    if mapping:
+        pairs = "; ".join(
+            f"{canonical} = {alias}" for canonical, alias in mapping.items()
+        )
+        preamble = (
+            "Konuşmacı adları (bu toplantı için kullanıcı tarafından seçildi): "
+            f"{pairs}.\n"
+            "Anlatımda bu adları TAM olarak, kısaltmadan yaz (örn. ad \"Test Ahmet\" "
+            "ise \"Test Ahmet\" yaz). action_items.owner alanında ise kanonik etiketi "
+            "(örn. \"Kişi 1\") koru.\n\n"
+        )
+    return preamble + "Transcript:\n" + serialize_transcript(turn_list)
 
 
 def build_repair_prompt(turns: Iterable[TranscriptTurnView], errors: list[str]) -> str:
