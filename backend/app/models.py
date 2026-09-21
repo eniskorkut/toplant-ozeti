@@ -92,6 +92,7 @@ class MeetingAnalysis(Base):
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_points_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     topics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     decisions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     action_items_json: Mapped[str | None] = mapped_column(Text, nullable=True)

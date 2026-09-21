@@ -100,6 +100,12 @@ class MeetingList(BaseModel):
     count: int
 
 
+class KeyPointOut(BaseModel):
+    text: str
+    source_turn_ordinals: list[int]
+    timestamp_seconds: float
+
+
 class DecisionOut(BaseModel):
     text: str
     source_turn_ordinals: list[int]
@@ -127,6 +133,7 @@ class AnalysisResponse(BaseModel):
     provider: str | None = None
     model: str | None = None
     summary: str | None = None
+    key_points: list[KeyPointOut] = []
     topics: list[str] = []
     decisions: list[DecisionOut] = []
     action_items: list[ActionItemOut] = []
@@ -469,8 +476,14 @@ async def queue_analysis(
     meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    refresh: Annotated[bool, Query(description="Rebuild with current aliases")] = False,
 ) -> AnalysisResponse:
-    """Queue grounded analysis. Idempotent; a failed analysis may be retried."""
+    """Queue grounded analysis.
+
+    Idempotent by default; a failed analysis may be retried. `refresh=true` rebuilds
+    a finished analysis with the CURRENT speaker aliases (explicit user action, so
+    no LLM quota is spent on every rename).
+    """
     meeting = await _get_meeting(session, meeting_id)
     if meeting.status != MEETING_STATUS_COMPLETED:
         raise HTTPException(
@@ -483,6 +496,25 @@ async def queue_analysis(
             select(MeetingAnalysis).where(MeetingAnalysis.meeting_id == meeting_id)
         )
     ).scalar_one_or_none()
+
+    if existing is not None and refresh:
+        if existing.status in (ANALYSIS_STATUS_QUEUED, ANALYSIS_STATUS_PROCESSING):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Analysis is already running",
+            )
+        try:
+            build_provider(settings)
+        except LlmConfigurationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+        existing.status = ANALYSIS_STATUS_QUEUED
+        existing.analysis_error = None
+        await session.commit()
+        await session.refresh(existing)
+        logger.info("analysis refresh queued for meeting %s", meeting_id)
+        return await _analysis_response(session, existing)
 
     if existing is None:
         # Fail fast when no eligible provider is configured: the queue would only
@@ -621,6 +653,14 @@ async def _analysis_response(session: AsyncSession, analysis: MeetingAnalysis) -
     return response.model_copy(
         update={
             "summary": payload.summary,
+            "key_points": [
+                KeyPointOut(
+                    text=key_point.text,
+                    source_turn_ordinals=key_point.source_turn_ordinals,
+                    timestamp_seconds=first_timestamp(key_point.source_turn_ordinals),
+                )
+                for key_point in payload.key_points
+            ],
             "topics": payload.topics,
             "decisions": [
                 DecisionOut(

@@ -31,8 +31,14 @@ class ImportantMoment(BaseModel):
     source_turn_ordinal: int
 
 
+class KeyPoint(BaseModel):
+    text: str = Field(min_length=1)
+    source_turn_ordinals: list[int] = Field(min_length=1)
+
+
 class AnalysisPayload(BaseModel):
     summary: str = Field(min_length=1)
+    key_points: list[KeyPoint] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
     action_items: list[ActionItem] = Field(default_factory=list)
@@ -49,6 +55,8 @@ class TranscriptTurnView:
     speaker: str
     start_seconds: float
     text: str
+    # Meeting-scoped display alias for the canonical speaker, if the user set one.
+    alias: str | None = None
 
 
 def parse_payload(raw: str) -> AnalysisPayload:
@@ -73,6 +81,13 @@ def semantic_errors(
 
     if not payload.summary.strip():
         errors.append("summary: empty")
+
+    for index, key_point in enumerate(payload.key_points):
+        if not key_point.text.strip():
+            errors.append(f"key_points[{index}]: empty text")
+        if not key_point.source_turn_ordinals:
+            errors.append(f"key_points[{index}]: missing source turn ordinals")
+        check_ordinals(key_point.source_turn_ordinals, f"key_points[{index}]")
 
     for index, decision in enumerate(payload.decisions):
         if not decision.text.strip():

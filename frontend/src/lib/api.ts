@@ -132,6 +132,12 @@ export type Transcript = {
 
 export type AnalysisStatusValue = "queued" | "processing" | "completed" | "failed";
 
+export type AnalysisKeyPoint = {
+  text: string;
+  source_turn_ordinals: number[];
+  timestamp_seconds: number;
+};
+
 export type AnalysisDecision = {
   text: string;
   source_turn_ordinals: number[];
@@ -159,6 +165,7 @@ export type MeetingAnalysis = {
   provider: string | null;
   model: string | null;
   summary: string | null;
+  key_points: AnalysisKeyPoint[];
   topics: string[];
   decisions: AnalysisDecision[];
   action_items: AnalysisActionItem[];
@@ -248,8 +255,12 @@ export function getAnalysis(meetingId: string): Promise<MeetingAnalysis> {
   return request<MeetingAnalysis>(`/api/v1/meetings/${meetingId}/analysis`);
 }
 
-export function startAnalysis(meetingId: string): Promise<MeetingAnalysis> {
-  return request<MeetingAnalysis>(`/api/v1/meetings/${meetingId}/analyze`, {
+export function startAnalysis(
+  meetingId: string,
+  options: { refresh?: boolean } = {},
+): Promise<MeetingAnalysis> {
+  const query = options.refresh ? "?refresh=true" : "";
+  return request<MeetingAnalysis>(`/api/v1/meetings/${meetingId}/analyze${query}`, {
     method: "POST",
   });
 }

@@ -21,6 +21,7 @@ import {
   type Transcript,
 } from "@/lib/api";
 import { formatDuration, formatMeetingDate, formatTimestamp, statusLabel } from "@/lib/format";
+import { buildMeetingNotes } from "@/lib/meeting-notes";
 import { CheckIcon, CopyIcon } from "@/lib/icons";
 import {
   applyAlias,
@@ -178,6 +179,11 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   const [renameSpeaker, setRenameSpeaker] = useState<string | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  // A rename after a completed analysis makes the stored prose stale; the user
+  // refreshes explicitly so no LLM quota is spent on every rename.
+  const [aliasesDirty, setAliasesDirty] = useState(false);
 
   const seekTo = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -325,6 +331,9 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
         await setMeetingSpeakerAlias(meetingId, canonical, displayName);
         setAliases((previous) => applyAlias(previous, canonical, displayName));
         setRenameSpeaker(null);
+        if (analysis?.status === "completed") {
+          setAliasesDirty(true);
+        }
       } catch (renameFailure) {
         setRenameError(
           renameFailure instanceof Error ? renameFailure.message : "Ad kaydedilemedi.",
@@ -345,6 +354,9 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
       await clearMeetingSpeakerAlias(meetingId, canonical);
       setAliases((previous) => applyAlias(previous, canonical, null));
       setRenameSpeaker(null);
+      if (analysis?.status === "completed") {
+        setAliasesDirty(true);
+      }
     } catch (renameFailure) {
       setRenameError(
         renameFailure instanceof Error ? renameFailure.message : "Ad sıfırlanamadı.",
@@ -353,6 +365,35 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
       setRenameBusy(false);
     }
   }, [meetingId, renameSpeaker]);
+
+  const handleCopyNotes = useCallback(async () => {
+    if (!analysis) return;
+    setCopyError(null);
+    const text = buildMeetingNotes(analysis, aliases);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError("Panoya kopyalanamadı. Tarayıcı izinlerini kontrol edin.");
+    }
+  }, [aliases, analysis]);
+
+  const handleRefreshAnalysis = useCallback(async () => {
+    setAnalysisBusy(true);
+    setAnalysisError(null);
+    try {
+      const queued = await startAnalysis(meetingId, { refresh: true });
+      setAnalysis(queued);
+      setAliasesDirty(false);
+    } catch (error) {
+      setAnalysisError(
+        error instanceof Error ? error.message : "Analiz yenilenemedi.",
+      );
+    } finally {
+      setAnalysisBusy(false);
+    }
+  }, [meetingId]);
 
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Yükleniyor…</p>;
@@ -504,13 +545,47 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             >
               Toplantı analizi
             </h2>
-            {analysis && analysis.status !== "failed" ? (
-              <StatusChip
-                status={analysis.status}
-                label={`${statusLabel(analysis.status)}${analysis.provider ? ` · ${analysis.provider}` : ""}`}
-              />
-            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              {analysis?.status === "completed" ? (
+                <button
+                  type="button"
+                  onClick={handleCopyNotes}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-950/10 px-3 py-1.5 text-xs font-medium text-zinc-800 transition-colors duration-150 ease-out hover:bg-zinc-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-white/15 dark:text-zinc-100"
+                >
+                  {copied ? <CheckIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" /> : <CopyIcon className="size-3.5" />}
+                  {copied ? "Kopyalandı" : "Toplantı Notlarını Kopyala"}
+                </button>
+              ) : null}
+              {analysis && analysis.status !== "failed" ? (
+                <StatusChip
+                  status={analysis.status}
+                  label={`${statusLabel(analysis.status)}${analysis.provider ? ` · ${analysis.provider}` : ""}`}
+                />
+              ) : null}
+            </div>
           </div>
+
+          {copyError ? (
+            <p role="status" className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+              {copyError}
+            </p>
+          ) : null}
+
+          {aliasesDirty && analysis?.status === "completed" ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-sky-500/10 px-3 py-2.5">
+              <p className="text-xs text-sky-900 dark:text-sky-200">
+                Konuşmacı adları değişti; analiz metni eski adları kullanıyor olabilir.
+              </p>
+              <button
+                type="button"
+                onClick={handleRefreshAnalysis}
+                disabled={analysisBusy}
+                className="inline-flex items-center rounded-xl bg-sky-700 px-3 py-1.5 text-xs font-medium text-white transition-colors duration-150 ease-out hover:bg-sky-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {analysisBusy ? "Yenileniyor…" : "Analizi yeni konuşmacı adlarıyla yenile"}
+              </button>
+            </div>
+          ) : null}
 
           {analysisError ? (
             <p
@@ -555,10 +630,25 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
           {analysis?.status === "completed" ? (
             <>
               {analysis.summary ? (
-                <Section title="Özet">
+                <Section title="Toplantı Özeti">
                   <p className="text-sm leading-relaxed text-zinc-900 dark:text-zinc-100">
                     {analysis.summary}
                   </p>
+                </Section>
+              ) : null}
+
+              {analysis.key_points.length > 0 ? (
+                <Section title="Ana Fikirler">
+                  <ul className="space-y-2">
+                    {analysis.key_points.map((point, index) => (
+                      <li key={`${point.text}-${index}`} className="flex gap-3">
+                        <TimestampButton seconds={point.timestamp_seconds} onSeek={seekTo} />
+                        <span className="text-sm text-zinc-900 dark:text-zinc-100">
+                          {point.text}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </Section>
               ) : null}
 
@@ -590,7 +680,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
               ) : null}
 
               {analysis.action_items.length > 0 ? (
-                <Section title="Aksiyonlar">
+                <Section title="Alınacak Aksiyonlar">
                   <ul className="space-y-2">
                     {analysis.action_items.map((item, index) => (
                       <li key={`${item.task}-${index}`} className="flex gap-3">

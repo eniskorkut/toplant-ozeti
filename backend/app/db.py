@@ -29,6 +29,9 @@ SQLITE_ADDITIVE_MIGRATIONS: dict[str, dict[str, str]] = {
         "transcription_model": "VARCHAR(64)",
         "requested_transcription_provider": "VARCHAR(32)",
     },
+    "meeting_analyses": {
+        "key_points_json": "TEXT",
+    },
 }
 
 

@@ -39,6 +39,7 @@ from app.services.llm_provider import (
     LlmProviderError,
     build_provider,
 )
+from app.services.speaker_aliases import list_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +115,16 @@ async def process_analysis(
             .scalars()
             .all()
         )
+        # Meeting-scoped aliases: human-readable prose uses the user's display
+        # names, while canonical labels stay the grounding identity.
+        aliases = await list_aliases(session, meeting_id)
         turns = [
             TranscriptTurnView(
                 ordinal=row.ordinal,
                 speaker=row.speaker,
                 start_seconds=row.start_seconds,
                 text=row.text,
+                alias=aliases.get(row.speaker),
             )
             for row in rows
         ]
@@ -159,6 +164,9 @@ async def process_analysis(
         stored.provider = response.provider
         stored.model = response.model
         stored.summary = payload.summary
+        stored.key_points_json = json.dumps(
+            [item.model_dump() for item in payload.key_points], ensure_ascii=False
+        )
         stored.topics_json = json.dumps(payload.topics, ensure_ascii=False)
         stored.decisions_json = json.dumps(
             [item.model_dump() for item in payload.decisions], ensure_ascii=False
@@ -206,6 +214,7 @@ def payload_from_row(row: MeetingAnalysis) -> AnalysisPayload | None:
         return None
     return AnalysisPayload(
         summary=row.summary,
+        key_points=json.loads(row.key_points_json or "[]"),
         topics=json.loads(row.topics_json or "[]"),
         decisions=json.loads(row.decisions_json or "[]"),
         action_items=json.loads(row.action_items_json or "[]"),

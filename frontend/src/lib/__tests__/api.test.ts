@@ -8,6 +8,7 @@ import {
   getTranscriptionProviders,
   listMeetings,
   processMeeting,
+  startAnalysis,
   uploadRecording,
 } from "@/lib/api";
 
@@ -179,6 +180,19 @@ describe("api client", () => {
       status: 409,
       message: "Meeting is being processed and cannot be deleted.",
     });
+  });
+
+  it("requests an analysis refresh explicitly", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ meeting_id: "m1", status: "queued", key_points: [] }),
+    );
+
+    await startAnalysis("m1", { refresh: true });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8000/api/v1/meetings/m1/analyze?refresh=true");
+    expect(init.method).toBe("POST");
   });
 
   it("ApiError keeps the status code for callers", () => {

@@ -62,6 +62,9 @@ const COMPLETED_ANALYSIS: MeetingAnalysis = {
   provider: "mock",
   model: "mock-model",
   summary: "Toplantı özeti.",
+  key_points: [
+    { text: "Cuma günü yayın hedeflendi.", source_turn_ordinals: [1], timestamp_seconds: 12.35 },
+  ],
   topics: ["konu bir", "konu iki"],
   decisions: [{ text: "Karar verildi.", source_turn_ordinals: [1], timestamp_seconds: 12.35 }],
   action_items: [
@@ -191,12 +194,12 @@ describe("MeetingDetail", () => {
 
     render(<MeetingDetail meetingId="m1" />);
 
-    expect(await screen.findByText("Özet")).toBeTruthy();
+    expect(await screen.findByText("Toplantı Özeti")).toBeTruthy();
     expect(screen.getByText("Toplantı özeti.")).toBeTruthy();
     expect(screen.getByText("konu bir")).toBeTruthy();
     expect(screen.getByText("Kararlar")).toBeTruthy();
     expect(screen.getByText("Karar verildi.")).toBeTruthy();
-    expect(screen.getByText("Aksiyonlar")).toBeTruthy();
+    expect(screen.getByText("Alınacak Aksiyonlar")).toBeTruthy();
     expect(screen.getByText(/Rapor yazılacak/)).toBeTruthy();
     expect(screen.getByText(/Kişi 2 · cuma/)).toBeTruthy();
     expect(screen.getByText("Önemli Anlar")).toBeTruthy();
@@ -340,5 +343,100 @@ describe("MeetingDetail speaker aliases", () => {
     });
     expect(clearMeetingSpeakerAlias).toHaveBeenCalledWith("m1", "Kişi 1");
     expect(await screen.findByText("Kişi 1")).toBeTruthy();
+  });
+});
+
+describe("MeetingDetail analysis aliases, key points and copy", () => {
+  it("renders grounded key points with clickable timestamps", async () => {
+    getAnalysis.mockResolvedValue(COMPLETED_ANALYSIS);
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("Ana Fikirler")).toBeTruthy();
+    expect(screen.getByText("Cuma günü yayın hedeflendi.")).toBeTruthy();
+
+    const seek = screen.getAllByRole("button", { name: /Sesi 00:12 konumuna getir/i })[0];
+    fireEvent.click(seek);
+    const audio = document.querySelector("audio") as HTMLAudioElement;
+    expect(audio.currentTime).toBeCloseTo(12.35, 2);
+  });
+
+  it("copies deterministic meeting notes with aliases and headings", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    getAnalysis.mockResolvedValue(COMPLETED_ANALYSIS);
+    getMeetingSpeakers.mockResolvedValue({
+      meeting_id: "m1",
+      speakers: ["Kişi 1", "Kişi 2"],
+      aliases: { "Kişi 2": "Mehmet" },
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Toplantı Özeti");
+    fireEvent.click(screen.getByRole("button", { name: "Toplantı Notlarını Kopyala" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = writeText.mock.calls[0][0] as string;
+    for (const heading of [
+      "TOPLANTI ÖZETİ",
+      "ANA FİKİRLER",
+      "KARARLAR",
+      "ALINACAK AKSİYONLAR",
+      "ÖNEMLİ ANLAR",
+    ]) {
+      expect(text).toContain(heading);
+    }
+    expect(text).toContain("Mehmet"); // alias resolved in action owner
+    expect(text).not.toContain("Kişi 2 ·"); // canonical replaced by alias
+    expect(text).toContain("[00:12]");
+    expect(await screen.findByText("Kopyalandı")).toBeTruthy();
+  });
+
+  it("survives clipboard failure without losing the analysis", async () => {
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    getAnalysis.mockResolvedValue(COMPLETED_ANALYSIS);
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Toplantı Özeti");
+    fireEvent.click(screen.getByRole("button", { name: "Toplantı Notlarını Kopyala" }));
+
+    expect(await screen.findByText(/Panoya kopyalanamadı/)).toBeTruthy();
+    expect(screen.getByText("Cuma günü yayın hedeflendi.")).toBeTruthy();
+  });
+
+  it("offers an explicit refresh after renaming when analysis is completed", async () => {
+    getAnalysis.mockResolvedValue(COMPLETED_ANALYSIS);
+    startAnalysis.mockResolvedValue({ ...COMPLETED_ANALYSIS, status: "queued" });
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Toplantı Özeti");
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Kişi 1 · Konuşmacı adını düzenle/ })[0],
+    );
+    fireEvent.change(screen.getByLabelText("Ad"), { target: { value: "Ahmet" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kaydet" }));
+    });
+
+    const refresh = await screen.findByRole("button", {
+      name: "Analizi yeni konuşmacı adlarıyla yenile",
+    });
+    await act(async () => {
+      fireEvent.click(refresh);
+    });
+    expect(startAnalysis).toHaveBeenCalledWith("m1", { refresh: true });
+  });
+
+  it("renders legacy analyses without key points", async () => {
+    getAnalysis.mockResolvedValue({ ...COMPLETED_ANALYSIS, key_points: [] });
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("Toplantı Özeti")).toBeTruthy();
+    expect(screen.queryByText("Ana Fikirler")).toBeNull();
+    expect(screen.getByText("Kararlar")).toBeTruthy();
   });
 });
