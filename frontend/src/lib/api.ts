@@ -273,12 +273,20 @@ export function meetingAudioUrl(meetingId: string): string {
 
 export type MeetingChatRole = "user" | "assistant";
 
+export type MeetingChatSource = {
+  ordinal: number;
+  start_seconds: number;
+  speaker: string;
+  text: string;
+};
+
 export type MeetingChatMessage = {
   role: MeetingChatRole;
   content: string;
   provider: string | null;
   model: string | null;
   created_at: string;
+  sources: MeetingChatSource[];
 };
 
 export type MeetingChatConversation = {

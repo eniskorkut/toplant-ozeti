@@ -189,4 +189,6 @@ class MeetingChatMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # JSON list of transcript turn ordinals that back the answer (evidence).
+    sources_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -32,6 +32,9 @@ SQLITE_ADDITIVE_MIGRATIONS: dict[str, dict[str, str]] = {
     "meeting_analyses": {
         "key_points_json": "TEXT",
     },
+    "meeting_chat_messages": {
+        "sources_json": "TEXT",
+    },
 }
 
 

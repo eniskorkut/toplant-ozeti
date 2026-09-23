@@ -9,6 +9,7 @@ import {
   getMeetingChat,
   type MeetingChatMessage,
 } from "@/lib/api";
+import { formatTimestamp } from "@/lib/format";
 
 const UNAVAILABLE_MESSAGE =
   "Soru-cevap için uygun bir LLM sağlayıcısı yapılandırılmamış.";
@@ -23,7 +24,14 @@ function scrollToBottom(node: HTMLDivElement | null) {
  * the meeting transcript (and its analysis summary). The conversation is persisted
  * by the backend, so it is reloaded on mount and survives a page refresh.
  */
-export function MeetingChat({ meetingId }: { meetingId: string }) {
+export function MeetingChat({
+  meetingId,
+  onSeek,
+}: {
+  meetingId: string;
+  /** Seek the meeting audio to a cited transcript timestamp. */
+  onSeek?: (seconds: number) => void;
+}) {
   const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -34,18 +42,21 @@ export function MeetingChat({ meetingId }: { meetingId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    getMeetingChat(meetingId)
-      .then((conversation) => {
+
+    async function load() {
+      setLoading(true);
+      try {
+        const conversation = await getMeetingChat(meetingId);
         if (!cancelled) setMessages(conversation.messages);
-      })
-      .catch(() => {
+      } catch {
         // An empty history is a normal state; the panel stays usable.
         if (!cancelled) setMessages([]);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void load();
     return () => {
       cancelled = true;
     };
@@ -110,15 +121,35 @@ export function MeetingChat({ meetingId }: { meetingId: string }) {
               key={index}
               className={message.role === "user" ? "flex justify-end" : "flex justify-start"}
             >
-              <p
-                className={
-                  message.role === "user"
-                    ? "max-w-[85%] rounded-2xl rounded-br-sm bg-zinc-900 px-3 py-2 text-sm whitespace-pre-wrap text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "max-w-[85%] rounded-2xl rounded-bl-sm bg-zinc-500/10 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-900 dark:text-zinc-100"
-                }
-              >
-                {message.content}
-              </p>
+              <div className="max-w-[85%] space-y-1.5">
+                <p
+                  className={
+                    message.role === "user"
+                      ? "rounded-2xl rounded-br-sm bg-zinc-900 px-3 py-2 text-sm whitespace-pre-wrap text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "rounded-2xl rounded-bl-sm bg-zinc-500/10 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-900 dark:text-zinc-100"
+                  }
+                >
+                  {message.content}
+                </p>
+                {message.role === "assistant" && message.sources.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Kanıt:
+                    </span>
+                    {message.sources.map((source) => (
+                      <button
+                        key={source.ordinal}
+                        type="button"
+                        onClick={() => onSeek?.(source.start_seconds)}
+                        title={`${source.speaker}: ${source.text}`}
+                        className="rounded-full bg-sky-500/10 px-2 py-0.5 font-mono text-[11px] tabular-nums text-sky-700 transition-colors duration-150 ease-out hover:bg-sky-500/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:text-sky-300"
+                      >
+                        {formatTimestamp(source.start_seconds)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ))
         )}

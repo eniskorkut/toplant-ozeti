@@ -197,11 +197,12 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   const [startError, setStartError] = useState<string | null>(null);
   const autoAnalyzeRef = useRef(false);
 
+  // Timestamp clicks only move the playhead. Playback is never started implicitly,
+  // so the user stays in control (if the audio was already playing it keeps playing).
   const seekTo = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = Math.max(0, seconds);
-    void audio.play().catch(() => undefined);
   }, []);
 
   const queueAnalysis = useCallback(async () => {
@@ -836,7 +837,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
               title="Toplantıya Sor"
               meta={<span className="text-xs text-zinc-500 dark:text-zinc-400">LLM</span>}
             >
-              <MeetingChat meetingId={meetingId} />
+              <MeetingChat meetingId={meetingId} onSeek={seekTo} />
             </CollapsibleSection>
           </div>
         </div>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -19,6 +20,7 @@ from app.models import (
     ANALYSIS_STATUS_COMPLETED,
     ANALYSIS_STATUS_PROCESSING,
     ANALYSIS_STATUS_QUEUED,
+    CHAT_ROLE_ASSISTANT,
     MEETING_STATUS_COMPLETED,
     MEETING_STATUS_PROCESSING,
     MEETING_STATUS_QUEUED,
@@ -577,6 +579,13 @@ class ChatQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4_000)
 
 
+class ChatSourceOut(BaseModel):
+    ordinal: int
+    start_seconds: float
+    speaker: str
+    text: str
+
+
 class ChatMessageOut(BaseModel):
     role: str
     content: str
@@ -584,6 +593,8 @@ class ChatMessageOut(BaseModel):
     provider: str | None = None
     model: str | None = None
     created_at: str
+    # Evidence for an assistant answer: transcript turns that support it.
+    sources: list[ChatSourceOut] = Field(default_factory=list)
 
 
 class ChatConversationResponse(BaseModel):
@@ -595,13 +606,50 @@ class ChatAnswerResponse(ChatConversationResponse):
     answer: str
 
 
-def _chat_message_out(message: MeetingChatMessage) -> ChatMessageOut:
+async def _turns_by_ordinal(
+    session: AsyncSession, meeting_id: str
+) -> dict[int, TranscriptTurn]:
+    rows = (
+        (
+            await session.execute(
+                select(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.ordinal: row for row in rows}
+
+
+def _chat_message_out(
+    message: MeetingChatMessage, turns: dict[int, TranscriptTurn]
+) -> ChatMessageOut:
+    """Resolve stored evidence ordinals against the transcript (never model timestamps)."""
+    sources: list[ChatSourceOut] = []
+    if message.role == CHAT_ROLE_ASSISTANT and message.sources_json:
+        try:
+            ordinals = json.loads(message.sources_json)
+        except ValueError:
+            ordinals = []
+        if isinstance(ordinals, list):
+            for ordinal in ordinals:
+                turn = turns.get(ordinal) if isinstance(ordinal, int) else None
+                if turn is not None:
+                    sources.append(
+                        ChatSourceOut(
+                            ordinal=turn.ordinal,
+                            start_seconds=turn.start_seconds,
+                            speaker=turn.speaker,
+                            text=turn.text,
+                        )
+                    )
     return ChatMessageOut(
         role=message.role,
         content=message.content,
         provider=message.provider,
         model=message.model,
         created_at=_iso_utc(message.created_at),
+        sources=sources,
     )
 
 
@@ -613,9 +661,10 @@ async def get_chat(
     """Return the persisted Q&A conversation for a meeting (oldest first)."""
     await _get_meeting(session, meeting_id)
     messages = await list_chat_messages(session, meeting_id)
+    turns = await _turns_by_ordinal(session, meeting_id)
     return ChatConversationResponse(
         meeting_id=meeting_id,
-        messages=[_chat_message_out(message) for message in messages],
+        messages=[_chat_message_out(message, turns) for message in messages],
     )
 
 
@@ -655,10 +704,11 @@ async def chat_about_meeting(
         ) from exc
 
     messages = await list_chat_messages(session, meeting_id)
+    turns = await _turns_by_ordinal(session, meeting_id)
     return ChatAnswerResponse(
         meeting_id=meeting_id,
         answer=answer.answer,
-        messages=[_chat_message_out(message) for message in messages],
+        messages=[_chat_message_out(message, turns) for message in messages],
     )
 
 

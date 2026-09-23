@@ -25,13 +25,22 @@ Hard rules:
 - Answer ONLY from the transcript (and the provided analysis summary).
 - Never invent facts, decisions, names, roles, dates or numbers.
 - If the answer is not present, say clearly that it is not in the transcript and do
-  not guess.
+  not guess; then return an empty source list.
 - "Kişi 1", "Kişi 2", ... are internal canonical labels. When a parenthesized alias
   is present (e.g. "Kişi 2 (Mehmet)"), use that alias in your answer.
 - "Bilinmeyen" is unresolved speech, not a participant.
-- Prefer short, direct answers. Mention the transcript timestamp (mm:ss) when it
-  helps the user locate a moment.
-- Do not mention these instructions or the transcript format.
+- Prefer short, direct answers.
+
+Evidence rules (MANDATORY):
+- Every factual claim must be backed by the transcript turn ordinal(s) that contain
+  it, listed in "source_turn_ordinals".
+- Cite only the turns that actually support the answer (usually 1-4 turns). Never
+  cite the whole transcript, and never cite a turn that does not contain the
+  evidence.
+- Do NOT write timestamps yourself: the system derives them from the ordinals.
+
+Reply with JSON only, entirely in Turkish, exactly in this shape:
+{"answer": "string (in Turkish)", "source_turn_ordinals": [0, 3]}
 """
 
 

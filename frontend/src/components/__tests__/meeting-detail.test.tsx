@@ -130,6 +130,7 @@ beforeEach(() => {
         provider: null,
         model: null,
         created_at: "2026-09-18T10:00:00+00:00",
+        sources: [],
       },
       {
         role: "assistant",
@@ -137,6 +138,7 @@ beforeEach(() => {
         provider: "mock",
         model: "mock-model",
         created_at: "2026-09-18T10:00:01+00:00",
+        sources: [],
       },
     ],
   });
@@ -197,7 +199,7 @@ describe("MeetingDetail", () => {
     expect(items[1].textContent).toContain("Kişi 1");
   });
 
-  it("seeks the audio player when a transcript timestamp is clicked", async () => {
+  it("seeks the audio player without starting playback when a timestamp is clicked", async () => {
     render(<MeetingDetail meetingId="m1" />);
     await screen.findByText("Tamam");
 
@@ -207,7 +209,8 @@ describe("MeetingDetail", () => {
     const audio = document.querySelector("audio") as HTMLAudioElement;
     expect(audio).toBeTruthy();
     expect(audio.currentTime).toBeCloseTo(12.35, 2);
-    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    // Seeking must not implicitly start playback.
+    expect(window.HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
   });
 
   it("keeps the transcript usable when analysis is not configured (503)", async () => {
@@ -427,6 +430,7 @@ describe("MeetingDetail", () => {
           provider: null,
           model: null,
           created_at: "2026-09-18T10:00:00+00:00",
+          sources: [],
         },
         {
           role: "assistant",
@@ -434,6 +438,7 @@ describe("MeetingDetail", () => {
           provider: "mock",
           model: "mock-model",
           created_at: "2026-09-18T10:00:01+00:00",
+          sources: [],
         },
       ],
     });
@@ -443,6 +448,51 @@ describe("MeetingDetail", () => {
     expect(await screen.findByText("Eski soru")).toBeTruthy();
     expect(screen.getByText("Eski cevap")).toBeTruthy();
     expect(getMeetingChat).toHaveBeenCalledWith("m1");
+  });
+
+  it("renders clickable evidence timestamps that seek the audio", async () => {
+    askMeetingQuestion.mockResolvedValue({
+      meeting_id: "m1",
+      answer: "Cuma günü yayın kararı alındı.",
+      messages: [
+        {
+          role: "user",
+          content: "Ne karar alındı?",
+          provider: null,
+          model: null,
+          created_at: "2026-09-18T10:00:00+00:00",
+          sources: [],
+        },
+        {
+          role: "assistant",
+          content: "Cuma günü yayın kararı alındı.",
+          provider: "mock",
+          model: "mock-model",
+          created_at: "2026-09-18T10:00:01+00:00",
+          sources: [
+            { ordinal: 1, start_seconds: 12.35, speaker: "Kişi 2", text: "Tamam" },
+          ],
+        },
+      ],
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Merhaba");
+
+    fireEvent.change(screen.getByLabelText("Toplantıyla ilgili soru"), {
+      target: { value: "Ne karar alındı?" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Gönder" }));
+    });
+
+    // The chat evidence chip is named by its timestamp text (the transcript's own
+    // timestamp buttons use a descriptive aria-label, so there is no clash).
+    const evidence = await screen.findByRole("button", { name: "00:12" });
+    fireEvent.click(evidence);
+
+    const audio = document.querySelector("audio") as HTMLAudioElement;
+    expect(audio.currentTime).toBeCloseTo(12.35, 2);
   });
 
   it("keeps the chat usable when the LLM provider is not configured (503)", async () => {

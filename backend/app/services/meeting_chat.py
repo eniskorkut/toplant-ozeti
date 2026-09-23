@@ -11,8 +11,9 @@ refresh; only text and safe provider metadata are stored.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,7 @@ from app.models import (
     MeetingChatMessage,
     TranscriptTurn,
 )
+from app.services.analysis_pipeline import extract_json_object
 from app.services.analysis_schema import TranscriptTurnView
 from app.services.chat_prompt import CHAT_SYSTEM_PROMPT, build_chat_user_prompt
 from app.services.llm_provider import LlmProviderError, build_provider
@@ -44,6 +46,7 @@ class ChatAnswer:
     answer: str
     provider: str
     model: str
+    sources: list[int] = field(default_factory=list)
 
 
 class MeetingNotReadyError(RuntimeError):
@@ -134,7 +137,10 @@ async def answer_meeting_question(
         user_prompt=user_prompt,
         session_id=meeting_id,
     )
-    answer_text = response.content.strip()
+    valid_ordinals = {row.ordinal for row in rows}
+    answer_text, sources = _parse_answer(
+        response.content, valid_ordinals=valid_ordinals
+    )
 
     # Persist the exchange only once the answer exists: the stored history is always
     # complete question/answer pairs, so a failed call leaves nothing behind.
@@ -148,6 +154,7 @@ async def answer_meeting_question(
             content=answer_text,
             provider=response.provider,
             model=response.model,
+            sources_json=json.dumps(sources),
         )
     )
     await session.commit()
@@ -156,7 +163,39 @@ async def answer_meeting_question(
         answer=answer_text,
         provider=response.provider,
         model=response.model,
+        sources=sources,
     )
+
+
+def _parse_answer(content: str, *, valid_ordinals: set[int]) -> tuple[str, list[int]]:
+    """Extract the Turkish answer and its evidence ordinals from the model output.
+
+    The model is asked for JSON, but a provider that ignores that is handled
+    gracefully: the raw text becomes the answer with no sources (never a crash and
+    never an invented timestamp).
+    """
+    fallback = content.strip()
+    try:
+        data = json.loads(extract_json_object(content))
+    except ValueError:
+        return fallback, []
+    if not isinstance(data, dict):
+        return fallback, []
+
+    answer = data.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        return fallback, []
+
+    sources: list[int] = []
+    raw_sources = data.get("source_turn_ordinals")
+    if isinstance(raw_sources, list):
+        for item in raw_sources:
+            # bool is an int subclass: never accept True/False as an ordinal.
+            if isinstance(item, bool) or not isinstance(item, int):
+                continue
+            if item in valid_ordinals and item not in sources:
+                sources.append(item)
+    return answer.strip(), sources
 
 
 def _trim_history(history: list[tuple[str, str]]) -> list[tuple[str, str]]:

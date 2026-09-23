@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -122,6 +123,53 @@ def test_chat_answers_and_persists_exchange(chat_client, monkeypatch) -> None:
         ("user", "Ne karar alındı?"),
         ("assistant", "Cuma günü yayın kararı alındı."),
     ]
+
+
+def test_chat_resolves_evidence_ordinals_to_timestamps(chat_client, monkeypatch) -> None:
+    client, database = chat_client
+    seed_meeting(
+        database,
+        "m9",
+        turns=[("Kişi 1", "Birinci."), ("Kişi 2", "İkinci."), ("Kişi 1", "Üçüncü.")],
+    )
+    payload = json.dumps(
+        {"answer": "İkinci konuşma kanıt.", "source_turn_ordinals": [1, 99, True]}
+    )
+    monkeypatch.setattr(
+        meeting_chat, "build_provider", lambda _settings: MockProvider(content=payload)
+    )
+
+    response = client.post("/api/v1/meetings/m9/chat", json={"question": "Kanıt?"})
+
+    assert response.status_code == 200
+    assistant = response.json()["messages"][-1]
+    assert assistant["content"] == "İkinci konuşma kanıt."
+    # 99 (unknown ordinal) and True (bool, not an ordinal) are dropped.
+    assert [source["ordinal"] for source in assistant["sources"]] == [1]
+    assert assistant["sources"][0]["start_seconds"] == 1.0
+    assert assistant["sources"][0]["speaker"] == "Kişi 2"
+    assert assistant["sources"][0]["text"] == "İkinci."
+
+    # The evidence is persisted and reloaded with the conversation.
+    reloaded = client.get("/api/v1/meetings/m9/chat").json()["messages"][-1]
+    assert [source["ordinal"] for source in reloaded["sources"]] == [1]
+
+
+def test_chat_plain_text_answer_has_no_sources(chat_client, monkeypatch) -> None:
+    client, database = chat_client
+    seed_meeting(database, "m10", turns=[("Kişi 1", "Merhaba.")])
+    monkeypatch.setattr(
+        meeting_chat,
+        "build_provider",
+        lambda _settings: MockProvider(content="Düz metin cevap."),
+    )
+
+    response = client.post("/api/v1/meetings/m10/chat", json={"question": "?"})
+
+    assert response.status_code == 200
+    assistant = response.json()["messages"][-1]
+    assert assistant["content"] == "Düz metin cevap."
+    assert assistant["sources"] == []
 
 
 def test_chat_history_survives_and_is_returned(chat_client) -> None:
