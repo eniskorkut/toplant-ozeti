@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AudioPlayer } from "@/components/audio-player";
 import { Chip, StatusChip } from "@/components/chips";
+import { CollapsibleSection } from "@/components/collapsible-section";
+import { MeetingChat } from "@/components/meeting-chat";
 import { SpeakerRenameDialog } from "@/components/speaker-rename-dialog";
 import {
   ApiError,
@@ -576,21 +578,20 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
         ) : null}
       </header>
 
-      {meeting.status === "completed" && transcript ? (
-        <section aria-labelledby="transcript" className="surface rounded-2xl p-4 sm:p-5">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <h2
-              id="transcript"
-              className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
-            >
-              Transkript
-            </h2>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              {transcript.turns.length} konuşma · {transcript.speakers.join(", ")}
-            </span>
-          </div>
-
-          <ol className="mt-3 space-y-0.5">
+      {meeting.status === "completed" ? (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)] lg:items-start">
+          <div className="space-y-5">
+            {transcript ? (
+              <CollapsibleSection
+                id="transcript"
+                title="Transkript"
+                meta={
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    {transcript.turns.length} konuşma · {transcript.speakers.join(", ")}
+                  </span>
+                }
+              >
+                <ol className="space-y-0.5">
             {transcript.turns.map((turn, index) => {
               const previousSpeaker = index > 0 ? transcript.turns[index - 1].speaker : null;
               const showSpeaker = turn.speaker !== previousSpeaker;
@@ -633,43 +634,43 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
             })}
           </ol>
 
-          {transcript.unresolved_turns > 0 ? (
-            <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-              {transcript.unresolved_turns} bölümde konuşmacı çözümlenemedi (
-              {transcript.unresolved_label}).
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+                {transcript.unresolved_turns > 0 ? (
+                  <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                    {transcript.unresolved_turns} bölümde konuşmacı çözümlenemedi (
+                    {transcript.unresolved_label}).
+                  </p>
+                ) : null}
+              </CollapsibleSection>
+            ) : null}
 
-      {meeting.status === "completed" ? (
-        <section aria-labelledby="analysis" className="surface rounded-2xl p-4 sm:p-5">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <h2
+            <CollapsibleSection
               id="analysis"
-              className="text-sm font-medium tracking-tight text-zinc-900 dark:text-zinc-100"
+              title="Toplantı analizi"
+              actions={
+                <>
+                  {analysis?.status === "completed" ? (
+                    <button
+                      type="button"
+                      onClick={handleCopyNotes}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-950/10 px-3 py-1.5 text-xs font-medium text-zinc-800 transition-colors duration-150 ease-out hover:bg-zinc-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-white/15 dark:text-zinc-100"
+                    >
+                      {copied ? (
+                        <CheckIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <CopyIcon className="size-3.5" />
+                      )}
+                      {copied ? "Kopyalandı" : "Toplantı Notlarını Kopyala"}
+                    </button>
+                  ) : null}
+                  {analysis && analysis.status !== "failed" ? (
+                    <StatusChip
+                      status={analysis.status}
+                      label={`${statusLabel(analysis.status)}${analysis.provider ? ` · ${analysis.provider}` : ""}`}
+                    />
+                  ) : null}
+                </>
+              }
             >
-              Toplantı analizi
-            </h2>
-            <div className="flex flex-wrap items-center gap-2">
-              {analysis?.status === "completed" ? (
-                <button
-                  type="button"
-                  onClick={handleCopyNotes}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-950/10 px-3 py-1.5 text-xs font-medium text-zinc-800 transition-colors duration-150 ease-out hover:bg-zinc-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-white/15 dark:text-zinc-100"
-                >
-                  {copied ? <CheckIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" /> : <CopyIcon className="size-3.5" />}
-                  {copied ? "Kopyalandı" : "Toplantı Notlarını Kopyala"}
-                </button>
-              ) : null}
-              {analysis && analysis.status !== "failed" ? (
-                <StatusChip
-                  status={analysis.status}
-                  label={`${statusLabel(analysis.status)}${analysis.provider ? ` · ${analysis.provider}` : ""}`}
-                />
-              ) : null}
-            </div>
-          </div>
 
           {copyError ? (
             <p role="status" className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
@@ -827,7 +828,18 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
               ) : null}
             </>
           ) : null}
-        </section>
+            </CollapsibleSection>
+          </div>
+
+          <div className="lg:sticky lg:top-6">
+            <CollapsibleSection
+              title="Toplantıya Sor"
+              meta={<span className="text-xs text-zinc-500 dark:text-zinc-400">LLM</span>}
+            >
+              <MeetingChat meetingId={meetingId} />
+            </CollapsibleSection>
+          </div>
+        </div>
       ) : null}
 
       {renameSpeaker !== null ? (

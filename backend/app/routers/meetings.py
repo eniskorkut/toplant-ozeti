@@ -25,10 +25,16 @@ from app.models import (
     UNKNOWN_SPEAKER,
     Meeting,
     MeetingAnalysis,
+    MeetingChatMessage,
     TranscriptTurn,
 )
 from app.services.analysis_pipeline import payload_from_row
-from app.services.llm_provider import LlmConfigurationError, build_provider
+from app.services.llm_provider import LlmConfigurationError, LlmProviderError, build_provider
+from app.services.meeting_chat import (
+    answer_meeting_question,
+    clear_chat_messages,
+    list_chat_messages,
+)
 from app.services.speaker_aliases import (
     AliasValidationError,
     clear_alias,
@@ -394,6 +400,9 @@ async def delete_meeting(
 
     await session.execute(delete(TranscriptTurn).where(TranscriptTurn.meeting_id == meeting_id))
     await session.execute(delete(MeetingAnalysis).where(MeetingAnalysis.meeting_id == meeting_id))
+    await session.execute(
+        delete(MeetingChatMessage).where(MeetingChatMessage.meeting_id == meeting_id)
+    )
     await session.execute(delete(Meeting).where(Meeting.id == meeting_id))
     await session.commit()
 
@@ -562,6 +571,106 @@ async def get_analysis(
     if analysis is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
     return await _analysis_response(session, analysis)
+
+
+class ChatQuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4_000)
+
+
+class ChatMessageOut(BaseModel):
+    role: str
+    content: str
+    # Safe provider metadata only (never keys or raw provider payloads).
+    provider: str | None = None
+    model: str | None = None
+    created_at: str
+
+
+class ChatConversationResponse(BaseModel):
+    meeting_id: str
+    messages: list[ChatMessageOut]
+
+
+class ChatAnswerResponse(ChatConversationResponse):
+    answer: str
+
+
+def _chat_message_out(message: MeetingChatMessage) -> ChatMessageOut:
+    return ChatMessageOut(
+        role=message.role,
+        content=message.content,
+        provider=message.provider,
+        model=message.model,
+        created_at=_iso_utc(message.created_at),
+    )
+
+
+@router.get("/{meeting_id}/chat", response_model=ChatConversationResponse)
+async def get_chat(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ChatConversationResponse:
+    """Return the persisted Q&A conversation for a meeting (oldest first)."""
+    await _get_meeting(session, meeting_id)
+    messages = await list_chat_messages(session, meeting_id)
+    return ChatConversationResponse(
+        meeting_id=meeting_id,
+        messages=[_chat_message_out(message) for message in messages],
+    )
+
+
+@router.post("/{meeting_id}/chat", response_model=ChatAnswerResponse)
+async def chat_about_meeting(
+    request: ChatQuestionRequest,
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ChatAnswerResponse:
+    """Answer a question about a completed meeting, grounded in its transcript.
+
+    Synchronous (no worker queue): the answer is produced with the configured
+    OpenAI-compatible provider and the exchange is persisted so the conversation
+    survives a refresh. No secret is ever returned.
+    """
+    meeting = await _get_meeting(session, meeting_id)
+    if meeting.status != MEETING_STATUS_COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Meeting transcript must be completed before asking questions",
+        )
+
+    try:
+        answer = await answer_meeting_question(
+            session, meeting_id, request.question, settings
+        )
+    except LlmConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except LlmProviderError as exc:
+        logger.warning("meeting chat failed for %s: %s", meeting_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Meeting assistant is temporarily unavailable.",
+        ) from exc
+
+    messages = await list_chat_messages(session, meeting_id)
+    return ChatAnswerResponse(
+        meeting_id=meeting_id,
+        answer=answer.answer,
+        messages=[_chat_message_out(message) for message in messages],
+    )
+
+
+@router.delete("/{meeting_id}/chat", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_chat(
+    meeting_id: Annotated[str, PathParam(min_length=1, max_length=64)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """Clear the persisted Q&A conversation for a meeting."""
+    await _get_meeting(session, meeting_id)
+    await clear_chat_messages(session, meeting_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{meeting_id}", response_model=MeetingStatus)

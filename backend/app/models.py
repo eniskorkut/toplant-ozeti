@@ -163,3 +163,30 @@ class MeetingLiveSpeaker(Base):
     )
     canonical_speaker: Mapped[str] = mapped_column(String(32))
     intervals_json: Mapped[str] = mapped_column(Text)
+
+
+CHAT_ROLE_USER = "user"
+CHAT_ROLE_ASSISTANT = "assistant"
+CHAT_ROLES = (CHAT_ROLE_USER, CHAT_ROLE_ASSISTANT)
+
+
+class MeetingChatMessage(Base):
+    """One grounded Q&A turn for a meeting.
+
+    Persisted so the conversation survives a page refresh. Only the question/answer
+    text and safe provider metadata are stored: never keys, raw provider payloads or
+    audio. Deleting the meeting removes its messages (FK cascade).
+    """
+
+    __tablename__ = "meeting_chat_messages"
+    __table_args__ = (Index("ix_meeting_chat_messages_meeting_id", "meeting_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    meeting_id: Mapped[str] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE")
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

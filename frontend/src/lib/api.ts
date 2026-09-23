@@ -269,6 +269,52 @@ export function meetingAudioUrl(meetingId: string): string {
   return `${getApiBaseUrl()}/api/v1/meetings/${meetingId}/audio`;
 }
 
+// --- grounded meeting Q&A (persisted) ---------------------------------------
+
+export type MeetingChatRole = "user" | "assistant";
+
+export type MeetingChatMessage = {
+  role: MeetingChatRole;
+  content: string;
+  provider: string | null;
+  model: string | null;
+  created_at: string;
+};
+
+export type MeetingChatConversation = {
+  meeting_id: string;
+  messages: MeetingChatMessage[];
+};
+
+export type MeetingChatAnswer = MeetingChatConversation & { answer: string };
+
+/** The persisted Q&A conversation for a meeting (oldest first). */
+export function getMeetingChat(meetingId: string): Promise<MeetingChatConversation> {
+  return request<MeetingChatConversation>(`/api/v1/meetings/${meetingId}/chat`);
+}
+
+/** Asks a question; the answer and the updated conversation are returned. */
+export function askMeetingQuestion(
+  meetingId: string,
+  options: { question: string },
+): Promise<MeetingChatAnswer> {
+  return request<MeetingChatAnswer>(`/api/v1/meetings/${meetingId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: options.question }),
+  });
+}
+
+/** Clears the persisted Q&A conversation for a meeting. */
+export async function clearMeetingChat(meetingId: string): Promise<void> {
+  const response = await fetch(`${getApiBaseUrl()}/api/v1/meetings/${meetingId}/chat`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorMessage(response));
+  }
+}
+
 // --- live transcription (ElevenLabs) ----------------------------------------
 
 export type LiveSpeakerState = {

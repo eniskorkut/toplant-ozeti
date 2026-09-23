@@ -14,6 +14,9 @@ const getMeetingSpeakers = vi.fn();
 const setMeetingSpeakerAlias = vi.fn();
 const clearMeetingSpeakerAlias = vi.fn();
 const getTranscriptionProviders = vi.fn();
+const askMeetingQuestion = vi.fn();
+const getMeetingChat = vi.fn();
+const clearMeetingChat = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -28,6 +31,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
     setMeetingSpeakerAlias: (...args: unknown[]) => setMeetingSpeakerAlias(...args),
     clearMeetingSpeakerAlias: (...args: unknown[]) => clearMeetingSpeakerAlias(...args),
     getTranscriptionProviders: (...args: unknown[]) => getTranscriptionProviders(...args),
+    askMeetingQuestion: (...args: unknown[]) => askMeetingQuestion(...args),
+    getMeetingChat: (...args: unknown[]) => getMeetingChat(...args),
+    clearMeetingChat: (...args: unknown[]) => clearMeetingChat(...args),
     meetingAudioUrl: (id: string) => `http://localhost:8000/api/v1/meetings/${id}/audio`,
   };
 });
@@ -114,6 +120,28 @@ beforeEach(() => {
       { id: "elevenlabs", available: true, cloud: true, label: "ElevenLabs" },
     ],
   });
+  askMeetingQuestion.mockResolvedValue({
+    meeting_id: "m1",
+    answer: "Toplantıda yayın kararı alındı.",
+    messages: [
+      {
+        role: "user",
+        content: "Ne karar alındı?",
+        provider: null,
+        model: null,
+        created_at: "2026-09-18T10:00:00+00:00",
+      },
+      {
+        role: "assistant",
+        content: "Toplantıda yayın kararı alındı.",
+        provider: "mock",
+        model: "mock-model",
+        created_at: "2026-09-18T10:00:01+00:00",
+      },
+    ],
+  });
+  getMeetingChat.mockResolvedValue({ meeting_id: "m1", messages: [] });
+  clearMeetingChat.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -370,6 +398,71 @@ describe("MeetingDetail", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("asks grounded questions in the chat panel and shows the answer", async () => {
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Merhaba");
+
+    fireEvent.change(screen.getByLabelText("Toplantıyla ilgili soru"), {
+      target: { value: "Ne karar alındı?" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Gönder" }));
+    });
+
+    expect(askMeetingQuestion).toHaveBeenCalledWith("m1", {
+      question: "Ne karar alındı?",
+    });
+    expect(await screen.findByText("Toplantıda yayın kararı alındı.")).toBeTruthy();
+  });
+
+  it("loads the persisted conversation on mount", async () => {
+    getMeetingChat.mockResolvedValue({
+      meeting_id: "m1",
+      messages: [
+        {
+          role: "user",
+          content: "Eski soru",
+          provider: null,
+          model: null,
+          created_at: "2026-09-18T10:00:00+00:00",
+        },
+        {
+          role: "assistant",
+          content: "Eski cevap",
+          provider: "mock",
+          model: "mock-model",
+          created_at: "2026-09-18T10:00:01+00:00",
+        },
+      ],
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+
+    expect(await screen.findByText("Eski soru")).toBeTruthy();
+    expect(screen.getByText("Eski cevap")).toBeTruthy();
+    expect(getMeetingChat).toHaveBeenCalledWith("m1");
+  });
+
+  it("keeps the chat usable when the LLM provider is not configured (503)", async () => {
+    askMeetingQuestion.mockRejectedValue(new ApiError(503, "not configured"));
+
+    render(<MeetingDetail meetingId="m1" />);
+    await screen.findByText("Merhaba");
+
+    fireEvent.change(screen.getByLabelText("Toplantıyla ilgili soru"), {
+      target: { value: "Ne konuşuldu?" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Gönder" }));
+    });
+
+    expect(
+      await screen.findByText(
+        "Soru-cevap için uygun bir LLM sağlayıcısı yapılandırılmamış.",
+      ),
+    ).toBeTruthy();
   });
 });
 
