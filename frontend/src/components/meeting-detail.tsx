@@ -12,13 +12,16 @@ import {
   getMeeting,
   getMeetingSpeakers,
   getTranscript,
+  getTranscriptionProviders,
   meetingAudioUrl,
   processMeeting,
   setMeetingSpeakerAlias,
   startAnalysis,
   type MeetingAnalysis,
   type MeetingStatus,
+  type ProviderCapability,
   type Transcript,
+  type TranscriptionProviderId,
 } from "@/lib/api";
 import { formatDuration, formatMeetingDate, formatTimestamp, statusLabel } from "@/lib/format";
 import { buildMeetingNotes } from "@/lib/meeting-notes";
@@ -184,12 +187,50 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   // A rename after a completed analysis makes the stored prose stale; the user
   // refreshes explicitly so no LLM quota is spent on every rename.
   const [aliasesDirty, setAliasesDirty] = useState(false);
+  // An uploaded (never processed) meeting can be started right here; the
+  // analysis is then queued automatically once the transcript is ready.
+  const [providers, setProviders] = useState<ProviderCapability[]>([]);
+  const [providerChoice, setProviderChoice] = useState<TranscriptionProviderId | null>(null);
+  const [startingTranscription, setStartingTranscription] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const autoAnalyzeRef = useRef(false);
 
   const seekTo = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = Math.max(0, seconds);
     void audio.play().catch(() => undefined);
+  }, []);
+
+  const queueAnalysis = useCallback(async () => {
+    try {
+      const created = await startAnalysis(meetingId);
+      setAnalysis(created);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 503) {
+        setAnalysisError(ANALYSIS_UNAVAILABLE_MESSAGE);
+      } else {
+        setAnalysisError(
+          error instanceof Error ? error.message : "Analiz başlatılamadı.",
+        );
+      }
+    }
+  }, [meetingId]);
+
+  // Provider capabilities drive the optional choice on the start button. A
+  // failure here is harmless: the server default still applies.
+  useEffect(() => {
+    let cancelled = false;
+    getTranscriptionProviders()
+      .then((capabilities) => {
+        if (cancelled) return;
+        setProviders(capabilities.providers.filter((provider) => provider.available));
+        setProviderChoice(capabilities.default);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Initial load: everything is reconstructed from the backend on refresh.
@@ -256,6 +297,11 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
         if (status.status === "completed") {
           const turns = await getTranscript(meetingId);
           if (!cancelled) setTranscript(turns);
+          if (autoAnalyzeRef.current) {
+            // The user started this run from here: finish the job by analysing.
+            autoAnalyzeRef.current = false;
+            if (!cancelled) await queueAnalysis();
+          }
         }
       } catch {
         // Keep the previous state; the next poll retries.
@@ -265,7 +311,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [meeting, meetingId]);
+  }, [meeting, meetingId, queueAnalysis]);
 
   // Analysis poll while a job is in flight.
   useEffect(() => {
@@ -302,24 +348,39 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
     }
   }, [meeting, meetingId]);
 
+  const handleStartTranscription = useCallback(async () => {
+    setStartingTranscription(true);
+    setStartError(null);
+    try {
+      const updated = await processMeeting(meetingId, {
+        speakerCount: meeting?.requested_speaker_count ?? null,
+        transcriptionProvider: providerChoice,
+      });
+      if (updated.status === "completed") {
+        // Idempotent path: already transcribed, so go straight to analysis.
+        await queueAnalysis();
+      } else {
+        autoAnalyzeRef.current = true;
+      }
+      setMeeting(updated);
+    } catch (error) {
+      setStartError(
+        error instanceof Error ? error.message : "İşleme kuyruğa alınamadı.",
+      );
+    } finally {
+      setStartingTranscription(false);
+    }
+  }, [meeting, meetingId, providerChoice, queueAnalysis]);
+
   const handleAnalyze = useCallback(async () => {
     setAnalysisBusy(true);
     setAnalysisError(null);
     try {
-      const created = await startAnalysis(meetingId);
-      setAnalysis(created);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 503) {
-        setAnalysisError(ANALYSIS_UNAVAILABLE_MESSAGE);
-      } else {
-        setAnalysisError(
-          error instanceof Error ? error.message : "Analiz başlatılamadı.",
-        );
-      }
+      await queueAnalysis();
     } finally {
       setAnalysisBusy(false);
     }
-  }, [meetingId]);
+  }, [queueAnalysis]);
 
   const handleRenameSave = useCallback(
     async (displayName: string) => {
@@ -437,6 +498,51 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
           <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
             Ses yazıya dönüştürülüyor ve konuşmacılar ayrılıyor.
           </p>
+        ) : null}
+
+        {meeting.status === "uploaded" ? (
+          <div className="mt-3 space-y-3">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              Bu kayıt henüz işlenmedi. Transkripsiyonu başlatın; tamamlandığında
+              toplantı analizi otomatik olarak hazırlanır.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {providers.length > 1 ? (
+                <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                  Yöntem
+                  <select
+                    value={providerChoice ?? ""}
+                    onChange={(event) =>
+                      setProviderChoice(event.target.value as TranscriptionProviderId)
+                    }
+                    className="rounded-xl border border-zinc-950/10 bg-transparent px-2.5 py-1.5 text-xs text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-white/15 dark:text-zinc-100"
+                  >
+                    {providers.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleStartTranscription}
+                disabled={startingTranscription}
+                className="inline-flex items-center rounded-xl bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white transition-transform duration-160 ease-out hover:bg-zinc-800 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              >
+                {startingTranscription ? "Kuyruğa alınıyor…" : "Transkripsiyonu Başlat"}
+              </button>
+            </div>
+            {startError ? (
+              <p
+                role="alert"
+                className="rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+              >
+                {startError}
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {meeting.status === "failed" ? (

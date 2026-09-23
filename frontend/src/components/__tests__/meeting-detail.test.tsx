@@ -13,6 +13,7 @@ const processMeeting = vi.fn();
 const getMeetingSpeakers = vi.fn();
 const setMeetingSpeakerAlias = vi.fn();
 const clearMeetingSpeakerAlias = vi.fn();
+const getTranscriptionProviders = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -26,6 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getMeetingSpeakers: (...args: unknown[]) => getMeetingSpeakers(...args),
     setMeetingSpeakerAlias: (...args: unknown[]) => setMeetingSpeakerAlias(...args),
     clearMeetingSpeakerAlias: (...args: unknown[]) => clearMeetingSpeakerAlias(...args),
+    getTranscriptionProviders: (...args: unknown[]) => getTranscriptionProviders(...args),
     meetingAudioUrl: (id: string) => `http://localhost:8000/api/v1/meetings/${id}/audio`,
   };
 });
@@ -105,6 +107,13 @@ beforeEach(() => {
     display_name: "Ahmet",
   });
   clearMeetingSpeakerAlias.mockResolvedValue(undefined);
+  getTranscriptionProviders.mockResolvedValue({
+    default: "local",
+    providers: [
+      { id: "local", available: true, cloud: false, label: "Yerel" },
+      { id: "elevenlabs", available: true, cloud: true, label: "ElevenLabs" },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -296,6 +305,68 @@ describe("MeetingDetail", () => {
         await vi.advanceTimersByTimeAsync(4200);
       });
       expect(getMeeting).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts an uploaded meeting with the default provider", async () => {
+    getMeeting.mockResolvedValue({
+      ...COMPLETED_MEETING,
+      status: "uploaded",
+      has_transcript: false,
+    });
+    processMeeting.mockResolvedValue({
+      ...COMPLETED_MEETING,
+      status: "queued",
+      has_transcript: false,
+    });
+
+    render(<MeetingDetail meetingId="m1" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Transkripsiyonu Başlat" }),
+    );
+
+    await waitFor(() =>
+      expect(processMeeting).toHaveBeenCalledWith("m1", {
+        speakerCount: null,
+        transcriptionProvider: "local",
+      }),
+    );
+  });
+
+  it("queues the analysis automatically once the transcript completes", async () => {
+    vi.useFakeTimers();
+    try {
+      getMeeting
+        .mockResolvedValueOnce({
+          ...COMPLETED_MEETING,
+          status: "uploaded",
+          has_transcript: false,
+        })
+        .mockResolvedValue(COMPLETED_MEETING);
+      processMeeting.mockResolvedValue({
+        ...COMPLETED_MEETING,
+        status: "queued",
+        has_transcript: false,
+      });
+
+      render(<MeetingDetail meetingId="m1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Transkripsiyonu Başlat" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2100);
+      });
+
+      expect(startAnalysis).toHaveBeenCalledWith("m1");
     } finally {
       vi.useRealTimers();
     }
