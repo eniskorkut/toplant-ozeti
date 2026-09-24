@@ -67,6 +67,14 @@ class Settings(BaseSettings):
 
     # Worker loop.
     worker_poll_seconds: float = 2.0
+    # How many jobs ONE worker process runs concurrently. CPU inference is thread
+    # bound, so raise this only together with smaller stt/diarization thread counts
+    # (or more CPU). Transcription keeps priority over analysis per loop.
+    worker_concurrency: int = 1
+    # Lease: a job stuck in `processing` longer than this is considered abandoned and
+    # is requeued. Lease-based recovery is safe with multiple worker replicas (unlike
+    # the previous "requeue every processing row on startup" behaviour).
+    worker_lease_seconds: float = 3600.0
 
     # --- transcription provider selection -------------------------------------
     # "local" (default) keeps the whisper.cpp + TitaNet stack; "elevenlabs" is the
@@ -103,6 +111,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_transcript_chars: int = 120_000
     llm_max_retries: int = 2
+    # Upper bound on concurrent LLM calls across the API and worker. LLM calls run in
+    # a dedicated thread pool of this size, so a burst of chat questions can never
+    # starve uploads/ffmpeg (which use the default executor) or the event loop.
+    llm_max_concurrency: int = 4
     # Not every OpenAI-compatible endpoint accepts response_format; only send it
     # when the operator explicitly enables JSON mode.
     llm_json_mode: bool = False

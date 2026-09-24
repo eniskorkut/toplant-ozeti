@@ -45,11 +45,18 @@ def _utcnow() -> datetime:
 
 class Meeting(Base):
     __tablename__ = "meetings"
+    # Claim query is `WHERE status = ? ORDER BY created_at`; the composite index
+    # serves both the filter and the ordering (the single status index is redundant).
+    __table_args__ = (Index("ix_meetings_status_created_at", "status", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default=MEETING_STATUS_UPLOADED, index=True)
+    status: Mapped[str] = mapped_column(String(16), default=MEETING_STATUS_UPLOADED)
+    # Set when a worker claims the job; used for lease-based stale recovery.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Paths are stored relative to the meetings data directory (no absolute host paths).
     audio_mp3_path: Mapped[str] = mapped_column(String(255))
     processing_wav_path: Mapped[str] = mapped_column(String(255))
@@ -79,15 +86,22 @@ class MeetingAnalysis(Base):
     """
 
     __tablename__ = "meeting_analyses"
+    __table_args__ = (
+        Index("ix_meeting_analyses_status_created_at", "status", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     meeting_id: Mapped[str] = mapped_column(
         ForeignKey("meetings.id", ondelete="CASCADE"), unique=True, index=True
     )
-    status: Mapped[str] = mapped_column(String(16), default=ANALYSIS_STATUS_QUEUED, index=True)
+    status: Mapped[str] = mapped_column(String(16), default=ANALYSIS_STATUS_QUEUED)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    # Set when a worker claims the analysis; used for lease-based stale recovery.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)

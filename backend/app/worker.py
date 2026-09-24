@@ -3,6 +3,10 @@
 Run inside the backend image (compose service `worker`):
 
     uv run --locked python -m app.worker
+
+`MEETING_WORKER_CONCURRENCY` slots poll the queue in parallel (default 1). Every
+claim is an atomic state transition, so running several workers/replicas is safe;
+stale jobs are recovered by lease, not by "requeue everything on startup".
 """
 
 from __future__ import annotations
@@ -25,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 async def recover_stale_jobs(database: Database, settings: Settings) -> tuple[int, int]:
-    """Single-worker startup recovery: requeue jobs stuck in `processing`."""
+    """Lease-based startup recovery: requeue jobs whose lease has expired."""
     async with database.session_factory() as session:
-        meetings = await requeue_stale_meetings(session)
-        analyses = await requeue_stale_analyses(session)
+        meetings = await requeue_stale_meetings(session, settings.worker_lease_seconds)
+        analyses = await requeue_stale_analyses(session, settings.worker_lease_seconds)
     if meetings or analyses:
         logger.info("recovered stale jobs: %d meetings, %d analyses", meetings, analyses)
     return meetings, analyses
@@ -50,26 +54,45 @@ async def run_once(database: Database, settings: Settings) -> bool:
         return False
 
 
+async def _worker_slot(settings: Settings, database: Database) -> None:
+    """One concurrent slot: poll, claim and process until cancelled."""
+    while True:
+        did_work = await run_once(database, settings)
+        if not did_work:
+            await asyncio.sleep(settings.worker_poll_seconds)
+
+
 async def worker_loop(settings: Settings, *, max_jobs: int | None = None) -> int:
-    """Poll the queue forever, or drain it and exit when `max_jobs` is set."""
+    """Run the queue.
+
+    With `max_jobs` the queue is drained sequentially and the loop exits (used by
+    tests and one-shot runs). Otherwise `MEETING_WORKER_CONCURRENCY` slots poll in
+    parallel and the loop runs until cancelled.
+    """
     database = Database(settings.database_url)
     await database.init()
     await recover_stale_jobs(database, settings)
-    logger.info("worker ready (database %s)", settings.database_url)
 
-    processed = 0
+    concurrency = 1 if max_jobs is not None else max(1, settings.worker_concurrency)
+    logger.info(
+        "worker ready (database %s, concurrency %d)", settings.database_url, concurrency
+    )
+
     try:
-        while max_jobs is None or processed < max_jobs:
-            did_work = await run_once(database, settings)
-            if did_work:
+        if max_jobs is not None:
+            processed = 0
+            while processed < max_jobs:
+                if not await run_once(database, settings):
+                    break
                 processed += 1
-            elif max_jobs is not None:
-                break
-            else:
-                await asyncio.sleep(settings.worker_poll_seconds)
+            return processed
+
+        await asyncio.gather(
+            *(_worker_slot(settings, database) for _ in range(concurrency))
+        )
+        return 0
     finally:
         await database.dispose()
-    return processed
 
 
 def main() -> int:

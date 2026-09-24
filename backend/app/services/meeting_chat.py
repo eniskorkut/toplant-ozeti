@@ -10,7 +10,6 @@ refresh; only text and safe provider metadata are stored.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -33,6 +32,7 @@ from app.services.analysis_pipeline import extract_json_object
 from app.services.analysis_schema import TranscriptTurnView
 from app.services.chat_prompt import CHAT_SYSTEM_PROMPT, build_chat_user_prompt
 from app.services.llm_provider import LlmProviderError, build_provider
+from app.services.llm_runtime import run_llm
 from app.services.speaker_aliases import list_aliases
 
 logger = logging.getLogger(__name__)
@@ -130,12 +130,13 @@ async def answer_meeting_question(
         raise LlmProviderError("meeting is too large for a single chat request")
 
     provider = build_provider(settings)
-    # The provider client is synchronous (httpx.post); keep the event loop free.
-    response = await asyncio.to_thread(
-        provider.analyze,
+    # Bounded, dedicated pool: chat traffic never starves uploads or the event loop.
+    response = await run_llm(
+        provider,
         system_prompt=CHAT_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         session_id=meeting_id,
+        settings=settings,
     )
     valid_ordinals = {row.ordinal for row in rows}
     answer_text, sources = _parse_answer(

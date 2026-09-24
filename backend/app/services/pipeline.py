@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -35,16 +36,24 @@ logger = logging.getLogger(__name__)
 MAX_ERROR_LENGTH = 500
 
 
-async def requeue_stale_meetings(session: AsyncSession) -> int:
-    """Recovery for the single-worker MVP: processing -> queued on worker startup.
+async def requeue_stale_meetings(session: AsyncSession, lease_seconds: float = 0.0) -> int:
+    """Requeue meetings stuck in `processing` beyond the lease.
 
-    Assumes exactly ONE worker instance. With multiple workers this would requeue a
-    job that another worker is still processing.
+    Lease-based rather than "everything on startup", so it is safe with multiple
+    worker replicas: a meeting another worker is actively processing is never stolen.
+    Rows with no lease timestamp (legacy/unknown) count as stale.
     """
+    cutoff = datetime.now(UTC) - timedelta(seconds=max(0.0, lease_seconds))
     result = await session.execute(
         update(Meeting)
-        .where(Meeting.status == MEETING_STATUS_PROCESSING)
-        .values(status=MEETING_STATUS_QUEUED)
+        .where(
+            Meeting.status == MEETING_STATUS_PROCESSING,
+            or_(
+                Meeting.processing_started_at.is_(None),
+                Meeting.processing_started_at < cutoff,
+            ),
+        )
+        .values(status=MEETING_STATUS_QUEUED, processing_started_at=None)
     )
     await session.commit()
     return result.rowcount or 0
@@ -66,7 +75,11 @@ async def claim_next_meeting(session: AsyncSession) -> Meeting | None:
     claimed = await session.execute(
         update(Meeting)
         .where(Meeting.id == candidate_id, Meeting.status == MEETING_STATUS_QUEUED)
-        .values(status=MEETING_STATUS_PROCESSING, processing_error=None)
+        .values(
+            status=MEETING_STATUS_PROCESSING,
+            processing_error=None,
+            processing_started_at=datetime.now(UTC),
+        )
     )
     await session.commit()
     if claimed.rowcount != 1:

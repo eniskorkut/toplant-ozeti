@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -40,6 +41,7 @@ from app.services.llm_provider import (
     LlmProviderError,
     build_provider,
 )
+from app.services.llm_runtime import run_llm
 from app.services.speaker_aliases import list_aliases
 
 logger = logging.getLogger(__name__)
@@ -59,12 +61,24 @@ def extract_json_object(content: str) -> str:
     return candidate[start : end + 1]
 
 
-async def requeue_stale_analyses(session: AsyncSession) -> int:
-    """Recovery for the single-worker MVP: processing -> queued on startup."""
+async def requeue_stale_analyses(session: AsyncSession, lease_seconds: float = 0.0) -> int:
+    """Requeue analyses stuck in `processing` beyond the lease.
+
+    Lease-based rather than "everything on startup", so it is safe with multiple
+    worker replicas: an analysis another worker is actively processing is never
+    stolen. Rows with no lease timestamp (legacy/unknown) count as stale.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=max(0.0, lease_seconds))
     result = await session.execute(
         update(MeetingAnalysis)
-        .where(MeetingAnalysis.status == ANALYSIS_STATUS_PROCESSING)
-        .values(status=ANALYSIS_STATUS_QUEUED)
+        .where(
+            MeetingAnalysis.status == ANALYSIS_STATUS_PROCESSING,
+            or_(
+                MeetingAnalysis.processing_started_at.is_(None),
+                MeetingAnalysis.processing_started_at < cutoff,
+            ),
+        )
+        .values(status=ANALYSIS_STATUS_QUEUED, processing_started_at=None)
     )
     await session.commit()
     return result.rowcount or 0
@@ -85,7 +99,11 @@ async def claim_next_analysis(session: AsyncSession) -> MeetingAnalysis | None:
     claimed = await session.execute(
         update(MeetingAnalysis)
         .where(MeetingAnalysis.id == candidate_id, MeetingAnalysis.status == ANALYSIS_STATUS_QUEUED)
-        .values(status=ANALYSIS_STATUS_PROCESSING, analysis_error=None)
+        .values(
+            status=ANALYSIS_STATUS_PROCESSING,
+            analysis_error=None,
+            processing_started_at=datetime.now(UTC),
+        )
     )
     await session.commit()
     if claimed.rowcount != 1:
@@ -134,10 +152,12 @@ async def process_analysis(
             raise LlmProviderError("transcript too large for single-pass analysis")
 
         provider = build_provider(settings)
-        response = provider.analyze(
+        response = await run_llm(
+            provider,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             session_id=meeting_id,
+            settings=settings,
         )
 
         raw = extract_json_object(response.content)
@@ -146,10 +166,12 @@ async def process_analysis(
         if payload is None:
             # Exactly one repair attempt with the validation errors and prior output.
             repair_attempts = 1
-            repaired = provider.analyze(
+            repaired = await run_llm(
+                provider,
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=build_repair_prompt(turns, errors),
                 session_id=meeting_id,
+                settings=settings,
             )
             payload, errors = validate_payload(extract_json_object(repaired.content), turns)
             if payload is None:

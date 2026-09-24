@@ -28,14 +28,33 @@ SQLITE_ADDITIVE_MIGRATIONS: dict[str, dict[str, str]] = {
         "transcription_provider": "VARCHAR(32)",
         "transcription_model": "VARCHAR(64)",
         "requested_transcription_provider": "VARCHAR(32)",
+        "processing_started_at": "DATETIME",
     },
     "meeting_analyses": {
         "key_points_json": "TEXT",
+        "processing_started_at": "DATETIME",
     },
     "meeting_chat_messages": {
         "sources_json": "TEXT",
     },
 }
+
+# create_all also never adds indexes to existing tables, so they are ensured here.
+# (name, table, column list) — idempotent, safe to run on every startup.
+SQLITE_ADDITIVE_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_meetings_status_created_at", "meetings", "status, created_at"),
+    ("ix_meeting_analyses_status_created_at", "meeting_analyses", "status, created_at"),
+    ("ix_meeting_chat_messages_meeting_id", "meeting_chat_messages", "meeting_id, id"),
+    ("ix_transcript_turns_meeting_ordinal", "transcript_turns", "meeting_id, ordinal"),
+)
+
+# Superseded single-column indexes (the composite above is a strict superset because
+# `status` is its leftmost column). Dropping them removes redundant write overhead on
+# databases created before the composite existed; a no-op on fresh databases.
+SQLITE_DROPPED_INDEXES: tuple[str, ...] = (
+    "ix_meetings_status",
+    "ix_meeting_analyses_status",
+)
 
 
 def configure_sqlite(engine: AsyncEngine) -> None:
@@ -74,6 +93,12 @@ class Database:
                         await connection.exec_driver_sql(
                             f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
                         )
+            for name, table, columns in SQLITE_ADDITIVE_INDEXES:
+                await connection.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})"
+                )
+            for name in SQLITE_DROPPED_INDEXES:
+                await connection.exec_driver_sql(f"DROP INDEX IF EXISTS {name}")
 
     async def dispose(self) -> None:
         await self.engine.dispose()
